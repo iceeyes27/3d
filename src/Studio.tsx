@@ -1,13 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
+import {
+  downloadProcessReport,
+  downloadProjectArchive,
+  downloadStl,
+  downloadViewportImage,
+} from './artifacts'
 import { evaluateQuest, holePassesThroughBase, tunnelsAreDistinct } from './course'
 import { ModelViewport } from './ModelViewport'
+import { ProfileBadge } from './ProfileBadge'
+import type { ProfileSaveState } from './profileWriter'
 import type {
   ModelShape,
   OperationRecord,
   OperationType,
   PrimitiveType,
+  ProgressBadge,
   Quest,
+  QuestPractice,
   QuestProject,
   TransformMode,
   Vector3Value,
@@ -18,9 +28,33 @@ interface StudioProps {
   savedProject?: QuestProject
   totalStars: number
   storageHealthy: boolean
+  saveState: ProfileSaveState
+  username: string
+  onSwitchProfile: () => void
   onBack: () => void
   onProjectChange: (questId: number, project: QuestProject) => void
-  onComplete: (questId: number, stars: number, project: QuestProject) => void
+  onComplete: (
+    questId: number,
+    stars: number,
+    project: QuestProject,
+    badges: ProgressBadge[],
+    practiceId?: string,
+  ) => void
+}
+
+const defaultPracticeByQuest: Record<number, QuestPractice> = {
+  1: { id: 'q1-shape-variation', title: '变式小挑战：甜筒帽', instruction: '再加入一个圆锥，认出它和球体的不同。', tools: ['cone'], operationTypes: ['add'] },
+  2: { id: 'q2-move-variation', title: '变式小挑战：轻轻挪一步', instruction: '把方块向任意方向再移动一小格。', tools: ['move'], operationTypes: ['move'] },
+  3: { id: 'q3-scale-variation', title: '变式小挑战：大小对比', instruction: '把零件再变大或变小一次，观察轮廓变化。', tools: ['scale'], operationTypes: ['scale'] },
+  4: { id: 'q4-rotate-variation', title: '变式小挑战：换个角度', instruction: '再旋转一次屋顶，看看角度怎样改变。', tools: ['rotate'], operationTypes: ['rotate'] },
+  5: { id: 'q5-align-variation', title: '变式小挑战：重新排齐', instruction: '再使用一次对齐工具，确认共同基准。', tools: ['align'], operationTypes: ['align'] },
+  6: { id: 'q6-size-variation', title: '变式小挑战：改一毫米', instruction: '把任意一个尺寸改动一次，感受精确数字。', tools: ['size-input'], operationTypes: ['scale'] },
+  7: { id: 'q7-copy-variation', title: '变式小挑战：再复制一个', instruction: '再复制一个零件，观察复制品是否完全相同。', tools: ['duplicate'], operationTypes: ['duplicate'] },
+  8: { id: 'q8-hole-variation', title: '变式小挑战：试一个洞', instruction: '加入一个圆柱，再把它切换成空洞。', tools: ['cylinder', 'hole'], operationTypes: ['hole'] },
+  9: { id: 'q9-wall-variation', title: '变式小挑战：比较壁厚', instruction: '调整一次内芯大小，观察壁厚怎样变化。', tools: ['scale'], operationTypes: ['scale'] },
+  10: { id: 'q10-check-variation', title: '变式小挑战：再次体检', instruction: '选择一个零件，再使用一次“稳稳落地”复查支撑。', tools: ['align'], operationTypes: ['align'] },
+  11: { id: 'q11-brief-variation', title: '变式小挑战：复述计划', instruction: '再次确认三步计划，再按计划检查作品。', tools: ['plan'], operationTypes: ['plan'] },
+  12: { id: 'q12-capstone-variation', title: '最后的小改进', instruction: '选择一个零件完成一次有理由的修改。', tools: ['move', 'scale', 'rotate'], operationTypes: ['move', 'scale', 'rotate'] },
 }
 
 const primitiveInfo: Record<PrimitiveType, { label: string; icon: string; color: string }> = {
@@ -50,11 +84,14 @@ function makeShape(type: PrimitiveType, count: number): ModelShape {
 }
 
 function initialProject(quest: Quest, savedProject?: QuestProject): QuestProject {
-  if (savedProject) return cloneProject(savedProject)
+  if (savedProject?.courseVersion === 2) return cloneProject(savedProject)
+  const now = Date.now()
   return {
+    courseVersion: 2,
     shapes: structuredClone(quest.starterShapes ?? []),
     operations: [],
-    updatedAt: Date.now(),
+    updatedAt: now,
+    startedAt: now,
   }
 }
 
@@ -100,7 +137,7 @@ function keepNestedHolesWithBase(source: ModelShape, updated: ModelShape): Model
   }
 }
 
-export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack, onProjectChange, onComplete }: StudioProps) {
+export function Studio({ quest, savedProject, totalStars, storageHealthy, saveState, username, onSwitchProfile, onBack, onProjectChange, onComplete }: StudioProps) {
   const [project, setProject] = useState<QuestProject>(() => initialProject(quest, savedProject))
   const [selectedId, setSelectedId] = useState<string | null>(() => project.shapes[0]?.id ?? null)
   const [mode, setMode] = useState<TransformMode>('translate')
@@ -108,14 +145,35 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
   const [redoStack, setRedoStack] = useState<QuestProject[]>([])
   const [status, setStatus] = useState('选中一个形状，就可以开始动手。')
   const [showSuccess, setShowSuccess] = useState(false)
-  const [creativeBonus, setCreativeBonus] = useState(false)
-  const [reason, setReason] = useState('')
+  const [hintLevel, setHintLevel] = useState(0)
+  const [usedHint, setUsedHint] = useState(false)
+  const [failedCheckCount, setFailedCheckCount] = useState(0)
+  const [resetViewSignal, setResetViewSignal] = useState(0)
+  const [viewGuideStep, setViewGuideStep] = useState(() => quest.id === 1 ? 1 : 0)
+  const [passedProject, setPassedProject] = useState<QuestProject | null>(null)
+  const [practiceActive, setPracticeActive] = useState(false)
+  const [practiceOperationStart, setPracticeOperationStart] = useState(0)
+  const [timerVisible, setTimerVisible] = useState(() => quest.id >= 11)
+  const [clock, setClock] = useState(Date.now())
+  const [showDemo, setShowDemo] = useState(() => savedProject?.courseVersion !== 2)
   const successModalRef = useRef<HTMLElement>(null)
-  const successInitialFocusRef = useRef<HTMLInputElement>(null)
+  const successInitialFocusRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
-    onProjectChange(quest.id, project)
-  }, [onProjectChange, project, quest.id])
+    onProjectChange(quest.id, (practiceActive || showSuccess) && passedProject ? passedProject : project)
+  }, [onProjectChange, passedProject, practiceActive, project, quest.id, showSuccess])
+
+  useEffect(() => {
+    if (quest.id < 11) return
+    const timer = window.setInterval(() => setClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [quest.id])
+
+  useEffect(() => {
+    if (!showDemo) return
+    const timer = window.setTimeout(() => setShowDemo(false), 6000)
+    return () => window.clearTimeout(timer)
+  }, [showDemo])
 
   useEffect(() => {
     if (!showSuccess) return
@@ -124,6 +182,14 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
+        if (passedProject) {
+          const restored = cloneProject(passedProject)
+          setProject(restored)
+          setSelectedId(restored.shapes[0]?.id ?? null)
+          setPassedProject(null)
+          setPracticeActive(false)
+          setStatus('已回到通过检查的作品，可以继续修改；修改后请重新检查。')
+        }
         setShowSuccess(false)
         return
       }
@@ -147,7 +213,7 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
       document.removeEventListener('keydown', handleKeyDown)
       if (returnFocus?.isConnected) returnFocus.focus()
     }
-  }, [showSuccess])
+  }, [passedProject, showSuccess])
 
   const selected = project.shapes.find((shape) => shape.id === selectedId) ?? null
   const evaluations = useMemo(
@@ -156,6 +222,63 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
   )
   const completeTaskIds = new Set(evaluations.filter((item) => item.complete).map((item) => item.taskId))
   const coreComplete = evaluations.length > 0 && evaluations.every((item) => item.complete)
+  const practice = quest.practice ?? defaultPracticeByQuest[quest.id]
+  const currentTask = practiceActive ? undefined : quest.tasks.find((task) => !completeTaskIds.has(task.id))
+  const currentStep = currentTask
+    ? quest.steps.find((step) => step.id === currentTask.id || step.taskId === currentTask.id)
+    : undefined
+  const plannedTools = practiceActive ? practice?.tools : currentStep?.tools
+  const activeTools = new Set(
+    plannedTools?.length
+      ? plannedTools
+      : currentTask
+        ? [...quest.palette, ...quest.allowedTools]
+        : [],
+  )
+  const targetShapes = practiceActive ? [] : quest.targetShapes
+  const dataHints = currentStep?.hints?.length ? currentStep.hints : quest.hints
+  const hints = [
+    dataHints?.[0] ?? '先看看目标和现在的作品，找出它们最明显的不同。',
+    dataHints?.[1] ?? quest.tip,
+    dataHints?.[2] ?? '看着淡蓝目标轮廓，使用右边亮起的工具完成这一步。',
+  ]
+  const badgeResults: Array<{ id: ProgressBadge; icon: string; name: string; detail: string; earned: boolean }> = [
+    { id: 'completion', icon: '✓', name: '完成徽章', detail: '最终作品通过全部检查', earned: Boolean(passedProject) || coreComplete },
+    { id: 'accuracy', icon: '◎', name: '精准徽章', detail: '第一次检查就全部通过', earned: (Boolean(passedProject) || coreComplete) && failedCheckCount === 0 },
+    { id: 'independence', icon: '★', name: '独立徽章', detail: '没有打开提示完成作品', earned: (Boolean(passedProject) || coreComplete) && !usedHint },
+  ]
+  const earnedBadges = badgeResults.filter((badge) => badge.earned).map((badge) => badge.id)
+  const elapsedSeconds = Math.max(0, Math.round((clock - (project.startedAt ?? project.updatedAt)) / 1000))
+  const currentElapsedSeconds = () => Math.max(0, Math.round((Date.now() - (project.startedAt ?? project.updatedAt)) / 1000))
+  const formattedTime = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`
+
+  useEffect(() => {
+    if (!practiceActive || !practice) return
+    const completed = project.operations.slice(practiceOperationStart).some((item) => practice.operationTypes.includes(item.type))
+    if (!completed) return
+    setPracticeActive(false)
+    setShowSuccess(true)
+    setStatus('变式小挑战完成！现在领取你的能力徽章。')
+  }, [practice, practiceActive, practiceOperationStart, project.operations])
+
+  useEffect(() => {
+    setHintLevel(0)
+    if (activeTools.has('move')) setMode('translate')
+    else if (activeTools.has('rotate')) setMode('rotate')
+    else if (activeTools.has('scale')) setMode('scale')
+  }, [currentTask?.id])
+
+  const moveDirections: ReadonlyArray<{ axis: keyof Vector3Value; amount: number; label: string }> = quest.id >= 6
+    ? [
+        { axis: 'x', amount: -0.5, label: 'X−' }, { axis: 'x', amount: 0.5, label: 'X＋' },
+        { axis: 'y', amount: -0.5, label: 'Y−' }, { axis: 'y', amount: 0.5, label: 'Y＋' },
+        { axis: 'z', amount: -0.5, label: 'Z−' }, { axis: 'z', amount: 0.5, label: 'Z＋' },
+      ]
+    : [
+        { axis: 'x', amount: -0.5, label: '向左' }, { axis: 'x', amount: 0.5, label: '向右' },
+        { axis: 'y', amount: 0.5, label: '向上' }, { axis: 'y', amount: -0.5, label: '向下' },
+        { axis: 'z', amount: -0.5, label: '向前' }, { axis: 'z', amount: 0.5, label: '向后' },
+      ]
 
   const commit = (shapes: ModelShape[], nextOperation?: OperationRecord, message?: string) => {
     setUndoStack((stack) => [...stack.slice(-29), cloneProject(project)])
@@ -164,6 +287,8 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
       shapes,
       operations: (nextOperation ? [...project.operations, nextOperation] : project.operations).slice(-1000),
       updatedAt: Date.now(),
+      startedAt: project.startedAt ?? Date.now(),
+      ...(project.elapsedSeconds === undefined ? {} : { elapsedSeconds: project.elapsedSeconds }),
     })
     if (message) setStatus(message)
   }
@@ -177,14 +302,14 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
     const shapes = project.shapes.map((shape) => {
       if (shape.id !== selectedId) return shape
       const updated = keepNestedHolesWithBase(shape, updater(shape))
-      return quest.id === 3 && shape.grouped && operationType ? { ...updated, grouped: false } : updated
+      return quest.id === 7 && shape.grouped && operationType ? { ...updated, grouped: false } : updated
     })
     commit(shapes, operationType ? operation(operationType, selectedId) : undefined, message)
   }
 
   const addShape = (type: PrimitiveType) => {
     const shape = makeShape(type, project.shapes.length)
-    if (quest.id === 4 && type === 'cylinder') {
+    if (quest.id === 8 && type === 'cylinder') {
       const tunnelCount = project.shapes.reduce(
         (count, current) => count
           + Number(current.type === 'cylinder')
@@ -217,10 +342,11 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
 
   const deleteSelected = () => {
     if (!selectedId) return
+    if (!window.confirm(`要移走“${selected?.name ?? '这个零件'}”吗？移走后可以立即点击撤销。`)) return
     const removedWasGrouped = project.shapes.find((shape) => shape.id === selectedId)?.grouped
     const next = project.shapes
       .filter((shape) => shape.id !== selectedId)
-      .map((shape) => quest.id === 3 && removedWasGrouped ? { ...shape, grouped: false } : shape)
+      .map((shape) => quest.id === 7 && removedWasGrouped ? { ...shape, grouped: false } : shape)
     commit(next, undefined, '形状已移走，需要时可以点击撤销。')
     setSelectedId(next[0]?.id ?? null)
   }
@@ -235,12 +361,29 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
   }
 
   const alignToGround = () => {
-    if (quest.id === 4 && selected?.type === 'cylinder') return
+    if (quest.id === 8 && selected?.type === 'cylinder') return
     updateSelected(
       (shape) => ({ ...shape, position: { ...shape.position, y: Math.max(0.1, shape.scale.y / 2) } }),
       'align',
       '已经稳稳地落到地面上。',
     )
+  }
+
+  const setExactDimension = (axis: keyof Vector3Value, rawValue: string) => {
+    const value = Number(rawValue)
+    if (!Number.isFinite(value) || value < 0.1 || value > 100) {
+      setStatus('请输入 0.1 到 100 毫米之间的尺寸。')
+      return
+    }
+    updateSelected(
+      (shape) => ({ ...shape, scale: { ...shape.scale, [axis]: value } }),
+      'scale',
+      `${axis.toUpperCase()} 尺寸已设为 ${value} 毫米。`,
+    )
+  }
+
+  const confirmPlan = () => {
+    commit(project.shapes, operation('plan'), '三步计划已记录：先读要求，再搭主体，最后检查修改。')
   }
 
   const groupScene = () => {
@@ -251,18 +394,18 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
         setStatus('还需要一个实体，洞才能从它里面减掉。')
         return
       }
-      const base = quest.id === 4
+      const base = quest.id === 8
         ? solids.find((shape) => shape.id === 'cheese')
         : [...solids].sort((a, b) => shapeVolume(b) - shapeVolume(a))[0]
       if (!base) {
         setStatus('没有找到要挖空的奶酪，点击重新开始可以恢复它。')
         return
       }
-      if (quest.id === 4 && (holes.length < 3 || holes.some((hole) => !holePassesThroughBase(base, hole)))) {
+      if (quest.id === 8 && (holes.length < 3 || holes.some((hole) => !holePassesThroughBase(base, hole)))) {
         setStatus('隧道还没有从奶酪的一边穿到另一边。把圆柱转横、放进奶酪中间，再试一次。')
         return
       }
-      if (quest.id === 4 && !tunnelsAreDistinct([...(base.holes ?? []), ...holes])) {
+      if (quest.id === 8 && !tunnelsAreDistinct([...(base.holes ?? []), ...holes])) {
         setStatus('有些隧道重叠在一起了。把它们移开一点，让奶酪上出现三个不同的洞。')
         return
       }
@@ -271,7 +414,9 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
           ? { ...shape, grouped: true, holes: [...(shape.holes ?? []), ...holes.map((hole) => ({ ...hole, isHole: false }))] }
           : shape,
       )
-      commit(next, operation('group', base.id), `组合完成：${holes.length} 个洞已经从奶酪中减掉。`)
+      commit(next, operation('group', base.id), quest.id === 9
+        ? '笔筒挖孔完成，系统会检查开口、壁厚和封底。'
+        : `组合完成：${holes.length} 个洞已经从奶酪中减掉。`)
       setSelectedId(base.id)
       return
     }
@@ -286,7 +431,7 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
   const onTransformEnd = (changed: ModelShape, type: 'move' | 'rotate' | 'scale') => {
     const shapes = project.shapes.map((shape) => (
       shape.id === changed.id
-        ? quest.id === 3 && shape.grouped ? { ...changed, grouped: false } : changed
+        ? quest.id === 7 && shape.grouped ? { ...changed, grouped: false } : changed
         : shape
     ))
     commit(shapes, operation(type, changed.id), type === 'move' ? '位置调整好了。' : type === 'rotate' ? '旋转完成。' : '大小调整好了。')
@@ -319,7 +464,9 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
     updateSelected(
       (shape) => shape.type === 'cylinder'
         ? { ...shape, rotation: { ...shape.rotation, z: shape.rotation.z + Math.PI / 2 } }
-        : { ...shape, rotation: { ...shape.rotation, y: shape.rotation.y + Math.PI / 6 } },
+        : shape.type === 'cone'
+          ? { ...shape, rotation: { ...shape.rotation, z: shape.rotation.z + Math.PI / 6 } }
+          : { ...shape, rotation: { ...shape.rotation, y: shape.rotation.y + Math.PI / 6 } },
       'rotate',
       selected?.type === 'cylinder' ? '圆柱转了 90°，现在可以成为横向隧道。' : '向右旋转了 30°。',
     )
@@ -356,28 +503,99 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
     setRedoStack([])
     setProject(fresh)
     setSelectedId(fresh.shapes[0]?.id ?? null)
+    setHintLevel(0)
+    setUsedHint(false)
+    setFailedCheckCount(0)
+    setPassedProject(null)
+    setPracticeActive(false)
+    setPracticeOperationStart(0)
     setStatus('工作台已经整理干净，可以重新开始了。')
   }
 
   const checkWork = () => {
-    if (coreComplete) {
-      setShowSuccess(true)
+    if (practiceActive) {
+      setStatus('先完成上方写着的变式小挑战，完成后会自动发放徽章。')
       return
     }
-    const firstMissing = quest.tasks.find((task) => !completeTaskIds.has(task.id))
-    setStatus(firstMissing ? `下一步：${firstMissing.label}` : '再检查一下任务要求。')
+    if (coreComplete) {
+      const completedProject = {
+        ...cloneProject(project),
+        elapsedSeconds: Math.max(project.elapsedSeconds ?? 0, currentElapsedSeconds()),
+      }
+      setPassedProject(completedProject)
+      if (practice) {
+        setPracticeOperationStart(project.operations.length)
+        setPracticeActive(true)
+        setHintLevel(0)
+        setStatus('主任务通过！再完成一个同本领的小挑战。')
+      } else {
+        setShowSuccess(true)
+      }
+      return
+    }
+    setFailedCheckCount((count) => count + 1)
+    const firstMissingEvaluation = evaluations.find((item) => !item.complete) as (typeof evaluations[number] & { feedback?: string }) | undefined
+    const firstMissing = quest.tasks.find((task) => task.id === firstMissingEvaluation?.taskId)
+      ?? quest.tasks.find((task) => !completeTaskIds.has(task.id))
+    setStatus(firstMissingEvaluation?.feedback ?? (firstMissing ? `下一步：${firstMissing.label}` : '再检查一下任务要求。'))
   }
 
   const claimReward = () => {
-    if (!coreComplete) {
+    const completedProject = passedProject ?? (coreComplete ? project : null)
+    if (!completedProject) {
       setShowSuccess(false)
       setStatus('作品刚刚发生了变化，请再检查一次任务。')
       return
     }
-    const stars = 1 + Number(creativeBonus) + Number(Boolean(reason))
-    onComplete(quest.id, stars, project)
+    const savedCompletion = {
+      ...completedProject,
+      elapsedSeconds: Math.max(completedProject.elapsedSeconds ?? 0, currentElapsedSeconds()),
+      updatedAt: Date.now(),
+    }
+    onComplete(quest.id, Math.max(1, earnedBadges.length), savedCompletion, earnedBadges, practice?.id)
     setShowSuccess(false)
     onBack()
+  }
+
+  const continueEditing = () => {
+    if (passedProject) {
+      const restored = cloneProject(passedProject)
+      setProject(restored)
+      setSelectedId(restored.shapes[0]?.id ?? null)
+    }
+    setPassedProject(null)
+    setPracticeActive(false)
+    setShowSuccess(false)
+    setStatus('已回到通过检查的作品，可以继续修改；修改后请重新检查。')
+  }
+
+  const revealHint = () => {
+    setUsedHint(true)
+    setHintLevel((level) => Math.min(3, level + 1))
+  }
+
+  const runExport = async (action: () => void | Promise<void>, successMessage: string) => {
+    try {
+      await action()
+      setStatus(successMessage)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '导出失败，请稍后再试。')
+    }
+  }
+
+  const speakCurrentTask = () => {
+    if (!('speechSynthesis' in window)) {
+      setStatus('这台设备暂时不能朗读。')
+      return
+    }
+    window.speechSynthesis.cancel()
+    const text = practiceActive
+      ? practice?.instruction ?? '请完成变式小挑战。'
+      : currentStep?.instruction ?? currentTask?.label ?? '本关任务已经全部完成。'
+    const speech = new SpeechSynthesisUtterance(text)
+    speech.lang = 'zh-CN'
+    speech.rate = 0.9
+    window.speechSynthesis.speak(speech)
   }
 
   return (
@@ -385,37 +603,42 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
       <header className="studio-topbar" inert={showSuccess ? true : undefined} aria-hidden={showSuccess || undefined}>
         <button className="back-button" type="button" onClick={onBack}>← 返回地图</button>
         <div className="studio-title"><span>{quest.icon}</span><div><small>第 {quest.id} 关</small><strong>{quest.title}</strong></div></div>
-        <div className="studio-score">⭐ {totalStars}</div>
+        <div className="studio-head-status">
+          <ProfileBadge name={username} onSwitch={onSwitchProfile} />
+          {quest.id >= 11 && timerVisible && <span className="gentle-timer" aria-label={`已经用时 ${formattedTime}`}>⏱ {formattedTime}<button type="button" onClick={() => setTimerVisible(false)} aria-label="隐藏计时">×</button></span>}
+          <span className={`work-state ${passedProject ? 'finished' : ''}`}>{passedProject ? '通关作品' : coreComplete ? '待检查草稿' : '草稿'}</span>
+          <span className="studio-score">⭐ {totalStars}</span>
+        </div>
       </header>
 
       <main className="studio-layout" inert={showSuccess ? true : undefined} aria-hidden={showSuccess || undefined}>
         <aside className="mission-panel">
-          <p className="eyebrow">本关任务</p>
-          <h1>{quest.title}</h1>
-          <p className="mission-story">{quest.story}</p>
-          <div className="learn-one"><strong>今天的新本领</strong><span>{quest.objective}</span></div>
-          <ol className="live-task-list">
-            {quest.tasks.map((task, index) => {
-              const complete = completeTaskIds.has(task.id)
-              return <li key={task.id} className={complete ? 'done' : ''}><span>{complete ? '✓' : index + 1}</span><p>{task.label}</p></li>
-            })}
-          </ol>
-          <div className="tip-card"><span aria-hidden="true">💡</span><p><strong>小提示</strong>{quest.tip}</p></div>
+          <div className="mission-progress"><span>{practiceActive ? '小挑战' : `${completeTaskIds.size} / ${quest.tasks.length}`}</span><div><i style={{ width: `${practiceActive || passedProject ? 100 : quest.tasks.length ? (completeTaskIds.size / quest.tasks.length) * 100 : 0}%` }} /></div></div>
+          <div className="mission-kicker"><p className="eyebrow">{practiceActive ? '同本领变式挑战' : coreComplete ? '可以检查作品' : '现在只做这一步'}</p><button type="button" onClick={speakCurrentTask} aria-label="朗读当前任务">🔊 朗读</button></div>
+          <h1>{practiceActive ? practice?.title : currentStep?.title ?? currentTask?.label ?? '作品已经完成'}</h1>
+          <p className="mission-story">{practiceActive ? practice?.instruction : currentStep?.instruction ?? (coreComplete ? '所有要求都已满足，点击检查后进入小挑战。' : quest.story)}</p>
+          <div className="learn-one"><strong>这一关的主目标</strong><span>{quest.objective}</span></div>
+          {currentTask && !practiceActive && (
+            <section className="hint-ladder" aria-label="三级提示">
+              <div className="hint-dots" aria-label={`已打开 ${hintLevel} 级提示`}><i className={hintLevel >= 1 ? 'on' : ''} /><i className={hintLevel >= 2 ? 'on' : ''} /><i className={hintLevel >= 3 ? 'on' : ''} /></div>
+              {hintLevel > 0 && <p><strong>第 {hintLevel} 级提示</strong>{hints[hintLevel - 1]}</p>}
+              {hintLevel < 3 && <button type="button" onClick={revealHint}>{hintLevel === 0 ? '我需要一点提示' : '再给我一点提示'}</button>}
+            </section>
+          )}
           <button className={`check-button ${coreComplete ? 'ready' : ''}`} type="button" onClick={checkWork}>
-            {coreComplete ? '检查完成，领取奖励' : '检查我的作品'}
+            {practiceActive ? '完成动作后自动通过' : coreComplete ? '检查最终作品' : '检查这一步'}
           </button>
         </aside>
 
         <section className="workbench" aria-label="3D 建模工作台">
-          <div className="studio-toolbar" aria-label="建模工具栏">
-            <div className="tool-group">
-              <button type="button" aria-pressed={mode === 'translate'} className={mode === 'translate' ? 'active' : ''} onClick={() => setMode('translate')}>↔ 移动</button>
-              {quest.id >= 2 && <button type="button" aria-pressed={mode === 'rotate'} className={mode === 'rotate' ? 'active' : ''} onClick={() => setMode('rotate')}>↻ 旋转</button>}
-              <button type="button" aria-pressed={mode === 'scale'} className={mode === 'scale' ? 'active' : ''} onClick={() => setMode('scale')}>⤢ 缩放</button>
+          <div className="studio-toolbar" aria-label="安全和历史工具">
+            <div className="tool-group history-tools">
+              <button type="button" onClick={undo} disabled={undoStack.length === 0}>↶ 撤销</button>
+              <button type="button" onClick={redo} disabled={redoStack.length === 0}>↷ 重做</button>
+              <button type="button" onClick={() => setResetViewSignal((signal) => signal + 1)}>⌖ 复位视角</button>
             </div>
-            <div className="tool-group">
-              <button type="button" onClick={undo} disabled={undoStack.length === 0} aria-label="撤销">↶</button>
-              <button type="button" onClick={redo} disabled={redoStack.length === 0} aria-label="重做">↷</button>
+            <div className="tool-group safety-tools">
+              <button type="button" onClick={deleteSelected} disabled={!selected} className="delete-safe">移走选中零件</button>
               <button type="button" onClick={resetQuest} className="quiet-danger">重新开始</button>
             </div>
           </div>
@@ -423,62 +646,52 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
           <div className="viewport-wrap">
             <ModelViewport
               shapes={project.shapes}
+              targetShapes={targetShapes}
               selectedId={selectedId}
               mode={mode}
+              transformEnabled={activeTools.has('move') || activeTools.has('scale')}
+              resetViewSignal={resetViewSignal}
               onSelect={setSelectedId}
               onTransformEnd={onTransformEnd}
             />
-            <div className="view-help">拖动空白处旋转视角 · 滚轮缩放 · 点击形状进行编辑</div>
+            {targetShapes.length > 0 && <div className="target-key"><i />淡蓝轮廓是本关目标</div>}
+            <div className="view-help">拖动空白处看四周 · 点形状选中</div>
+            {showDemo && <section className="quest-demo" aria-label="本关动态演示"><button type="button" onClick={() => setShowDemo(false)}>跳过演示</button><div className="demo-object" aria-hidden="true">{quest.icon}</div><strong>{quest.objective}</strong><p>看清淡蓝目标，再使用右边亮起的工具。</p><i /></section>}
+            {!practiceActive && hintLevel >= 3 && <div className="action-ghost" aria-label="半透明动作示范"><span aria-hidden="true">☝</span><p>{hints[2]}</p></div>}
+            {!showDemo && viewGuideStep > 0 && <section className="view-guide" aria-label="视角小练习"><button className="guide-skip" type="button" onClick={() => setViewGuideStep(0)}>跳过</button><span aria-hidden="true">{viewGuideStep === 1 ? '👆' : '⌖'}</span><strong>{viewGuideStep === 1 ? '先学会看四周' : '再回到最好看的角度'}</strong><p>{viewGuideStep === 1 ? '按住画布空白处拖一拖，看看模型的另一面。' : '点一下“复位视角”，画布会回到初始位置。'}</p><button className="guide-next" type="button" onClick={() => { if (viewGuideStep === 1) setViewGuideStep(2); else { setResetViewSignal((signal) => signal + 1); setViewGuideStep(0) } }}>{viewGuideStep === 1 ? '我试过了' : '复位视角并开始'}</button></section>}
           </div>
-          <div className="studio-status" role="status"><span aria-hidden="true">🐼</span>{status}<span className={`autosave ${storageHealthy ? '' : 'save-error'}`}>{storageHealthy ? '已自动保存' : '暂时无法保存'}</span></div>
+          <div className="studio-status" role="status"><span aria-hidden="true">🐼</span>{status}<span className={`autosave ${storageHealthy || saveState === 'saving' ? '' : 'save-error'}`}>{saveState === 'saving' ? '正在保存…' : storageHealthy ? '已自动保存' : saveState === 'conflict' ? '请处理进度冲突' : '暂时无法保存'}</span></div>
         </section>
 
-        <aside className="tools-panel">
-          <section>
-            <p className="panel-label">添加形状</p>
-            <div className="shape-palette">
-              {quest.palette.map((type) => (
+        <aside className={`tools-panel ${!practiceActive && hintLevel >= 2 ? 'hint-highlight' : ''}`}>
+          <section className="step-tools">
+            <p className="panel-label">这一步需要的工具</p>
+            <div className="step-tool-grid">
+              {quest.palette.filter((type) => activeTools.has(type)).map((type) => (
                 <button key={type} type="button" onClick={() => addShape(type)}>
-                  <span style={{ color: primitiveInfo[type].color }}>{primitiveInfo[type].icon}</span>{primitiveInfo[type].label}
+                  <span style={{ color: primitiveInfo[type].color }}>{primitiveInfo[type].icon}</span>加入{primitiveInfo[type].label}
                 </button>
               ))}
+              {activeTools.has('move') && activeTools.size > 1 && <button type="button" className={mode === 'translate' ? 'active' : ''} onClick={() => setMode('translate')}>✥ 拖动移动</button>}
+              {activeTools.has('scale') && activeTools.size > 1 && <button type="button" className={mode === 'scale' ? 'active' : ''} onClick={() => setMode('scale')}>⤢ 拖动变大小</button>}
+              {activeTools.has('rotate') && <button type="button" onClick={rotateSelected} disabled={!selected}>↻ {selected?.type === 'cylinder' ? '转成横向' : '转一下'}</button>}
+              {activeTools.has('duplicate') && <button type="button" onClick={duplicateSelected} disabled={!selected}>⧉ 复制一个</button>}
+              {activeTools.has('align') && <button type="button" onClick={alignToGround} disabled={!selected}>⌄ 稳稳落地</button>}
+              {activeTools.has('hole') && <button type="button" onClick={toggleHole} disabled={!selected || selected.type !== 'cylinder'}>◌ {selected?.isHole ? '变回实体' : '设为空洞'}</button>}
+              {activeTools.has('group') && <button type="button" onClick={groupScene}>⬡ {quest.id === 8 || quest.id === 9 ? '完成挖孔' : '组合成作品'}</button>}
+              {activeTools.has('plan') && <button type="button" onClick={confirmPlan}>☑ 确认三步计划</button>}
             </div>
           </section>
 
           <section className="selected-panel">
-            <p className="panel-label">编辑选中形状</p>
-            {selected ? (
-              <>
-                <div className="selected-name"><span style={{ background: selected.color }} />{selected.name}{selected.isHole && <em>洞</em>}</div>
-                <div className="quick-actions">
-                  {quest.id >= 3 && <button type="button" onClick={duplicateSelected}>⧉ 复制</button>}
-                  {quest.id >= 2 && !(quest.id === 4 && selected.type === 'cylinder') && <button type="button" onClick={alignToGround}>⌄ 落地</button>}
-                  {quest.id >= 4 && selected.type === 'cylinder' && <button type="button" aria-pressed={Boolean(selected.isHole)} onClick={toggleHole} className={selected.isHole ? 'active' : ''}>◌ {selected.isHole ? '变实体' : '设为空洞'}</button>}
-                  <button type="button" onClick={deleteSelected}>× 移走</button>
-                </div>
-                <div className="mini-control">
-                  <span>移动</span>
-                  <div><button type="button" onClick={() => nudgePosition('x', -0.5)}>X−</button><button type="button" onClick={() => nudgePosition('x', 0.5)}>X＋</button></div>
-                  <div><button type="button" onClick={() => nudgePosition('y', -0.5)}>Y−</button><button type="button" onClick={() => nudgePosition('y', 0.5)}>Y＋</button></div>
-                  <div><button type="button" onClick={() => nudgePosition('z', -0.5)}>Z−</button><button type="button" onClick={() => nudgePosition('z', 0.5)}>Z＋</button></div>
-                </div>
-                <div className="mini-control compact"><span>大小</span><div><button type="button" onClick={() => changeScale(-0.25)}>−</button><button type="button" onClick={() => changeScale(0.25)}>＋</button></div>{quest.id >= 2 && <button type="button" onClick={rotateSelected}>↻ {selected.type === 'cylinder' ? '旋转 90°' : '旋转 30°'}</button>}</div>
-                <div className="color-row" aria-label="选择颜色">
-                  {[['#ff9b56', '橙色'], ['#f4c844', '黄色'], ['#60b8ff', '蓝色'], ['#56bb85', '绿色'], ['#9b7cf6', '紫色'], ['#f36e79', '红色']].map(([color, name]) => (
-                    <button key={color} type="button" aria-pressed={selected.color === color} style={{ background: color }} className={selected.color === color ? 'selected' : ''} onClick={() => changeColor(color)} aria-label={`换成${name}`} />
-                  ))}
-                </div>
-              </>
-            ) : <p className="empty-selection">先在工作台上点击一个形状。</p>}
-            {project.shapes.length > 0 && (
-              <div className="parts-list" aria-label="我的零件">
-                <span>我的零件</span>
-                <div>{project.shapes.map((shape) => <button key={shape.id} type="button" className={shape.id === selectedId ? 'selected' : ''} onClick={() => setSelectedId(shape.id)}>{shape.isHole ? '◌' : '◆'} {shape.name}</button>)}</div>
-              </div>
-            )}
+            <label className="part-picker"><span>当前选中</span><select value={selectedId ?? ''} onChange={(event) => setSelectedId(event.target.value || null)}><option value="">请在画布上选一个</option>{project.shapes.map((shape) => <option key={shape.id} value={shape.id}>{shape.isHole ? '◌' : '◆'} {shape.name}</option>)}</select></label>
+            {activeTools.has('move') && activeTools.size === 1 && <div className="direction-grid">{moveDirections.map((item) => <button key={`${item.axis}-${item.amount}`} type="button" disabled={!selected} onClick={() => nudgePosition(item.axis, item.amount)}>{item.label}</button>)}</div>}
+            {activeTools.has('scale') && activeTools.size === 1 && <div className="size-buttons"><button type="button" disabled={!selected} onClick={() => changeScale(-0.25)}>− 变小</button><button type="button" disabled={!selected} onClick={() => changeScale(0.25)}>＋ 变大</button></div>}
+            {activeTools.has('size-input') && selected && <fieldset className="size-inputs"><legend>精确尺寸（毫米）</legend>{(['x', 'y', 'z'] as const).map((axis) => <label key={axis}><span>{axis.toUpperCase()}</span><input key={`${selected.id}-${axis}-${selected.scale[axis]}`} type="number" min="0.1" max="100" step="0.1" defaultValue={Number(selected.scale[axis].toFixed(2))} onBlur={(event) => setExactDimension(axis, event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }} /></label>)}</fieldset>}
+            {activeTools.has('color') && selected && <div className="color-row" aria-label="选择颜色">{[['#ff9b56', '橙色'], ['#f4c844', '黄色'], ['#60b8ff', '蓝色'], ['#56bb85', '绿色'], ['#9b7cf6', '紫色'], ['#f36e79', '红色']].map(([color, name]) => <button key={color} type="button" aria-pressed={selected.color === color} style={{ background: color }} className={selected.color === color ? 'selected' : ''} onClick={() => changeColor(color)} aria-label={`换成${name}`} />)}</div>}
           </section>
 
-          {quest.id >= 3 && <button className="group-button" type="button" onClick={groupScene}>⬡ 组合场景中的形状</button>}
+          {quest.id >= 9 && <details className="work-archive"><summary>🗂️ 作品档案</summary><div><button type="button" onClick={() => runExport(() => downloadProjectArchive(quest, project), '可编辑工程已下载。')}>可编辑工程</button><button type="button" onClick={() => runExport(() => downloadStl(quest, project), 'STL 模型已下载。')}>STL 模型</button><button type="button" onClick={() => runExport(() => downloadViewportImage(quest), '作品图已下载。')}>作品图</button><button type="button" onClick={() => runExport(() => downloadProcessReport(quest, project), '过程记录已下载。')}>过程记录</button></div></details>}
         </aside>
       </main>
 
@@ -488,16 +701,16 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, onBack
         <div className="modal-backdrop success-backdrop" role="presentation">
           <section ref={successModalRef} className="success-modal" role="dialog" aria-modal="true" aria-labelledby="success-title">
             <div className="success-burst" aria-hidden="true">🎉</div>
-            <p className="eyebrow">闯关成功</p>
-            <h2 id="success-title">核心本领已经学会！</h2>
-            <p>第一颗星属于认真完成任务的你。再回想一下作品，还可以收集两颗成长星。</p>
-            <label className="bonus-check"><input ref={successInitialFocusRef} type="checkbox" checked={creativeBonus} onChange={(event) => setCreativeBonus(event.target.checked)} /><span><strong>创意星</strong>我加入了和示例不一样的设计</span></label>
-            <fieldset className="reason-picker"><legend><strong>表达星</strong>这次修改让作品……</legend>
-              {['更稳了', '更像我的想法', '解决了一个问题'].map((item) => <button key={item} type="button" aria-pressed={reason === item} className={reason === item ? 'selected' : ''} onClick={() => setReason(item)}>{item}</button>)}
-            </fieldset>
-            <div className="earned-stars" aria-label={`本次获得 ${1 + Number(creativeBonus) + Number(Boolean(reason))} 颗星`}>{'⭐'.repeat(1 + Number(creativeBonus) + Number(Boolean(reason)))}</div>
-            <button className="primary-button full-width" type="button" onClick={claimReward}>领取 {quest.reward}</button>
-            <button className="secondary-button full-width" type="button" onClick={() => setShowSuccess(false)}>再修改一下</button>
+            <p className="eyebrow">检查完成</p>
+            <h2 id="success-title">作品已达到本关目标！</h2>
+            <p>徽章由任务记录自动判定，不需要自己打勾。</p>
+            {quest.reflectionPrompt && <p className="reflection-prompt"><strong>说一说</strong>{quest.reflectionPrompt}</p>}
+            <div className="badge-results">
+              {badgeResults.map((badge) => <div key={badge.name} className={badge.earned ? 'earned' : ''}><span aria-hidden="true">{badge.earned ? badge.icon : '·'}</span><p><strong>{badge.name}</strong><small>{badge.detail}</small></p></div>)}
+            </div>
+            <div className="earned-stars" aria-label={`本次获得 ${earnedBadges.length} 颗星`}>{'⭐'.repeat(earnedBadges.length)}</div>
+            <button ref={successInitialFocusRef} className="primary-button full-width" type="button" onClick={claimReward}>领取 {quest.reward}</button>
+            <button className="secondary-button full-width" type="button" onClick={continueEditing}>再修改一下</button>
           </section>
         </div>
       )}

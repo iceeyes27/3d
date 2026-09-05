@@ -7,8 +7,11 @@ import type { ModelShape, TransformMode } from './types'
 
 export interface ModelViewportProps {
   shapes: ModelShape[]
+  targetShapes?: ModelShape[]
   selectedId: string | null
   mode: TransformMode
+  transformEnabled?: boolean
+  resetViewSignal?: number
   onSelect: (id: string | null) => void
   onTransformEnd: (shape: ModelShape, operation: 'move' | 'rotate' | 'scale') => void
 }
@@ -23,6 +26,7 @@ interface ViewportRuntime {
   transform: TransformControls
   transformHelper: THREE.Object3D
   shapeGroup: THREE.Group
+  targetGroup: THREE.Group
   shapeObjects: Map<string, ShapeObject>
   shapeSources: Map<string, ModelShape>
   selectionOutline: THREE.BoxHelper | null
@@ -100,7 +104,7 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]) {
   }
 }
 
-function disposeObject(object: THREE.Object3D) {
+export function disposeModelObject(object: THREE.Object3D) {
   const geometries = new Set<THREE.BufferGeometry>()
   const materials = new Set<THREE.Material>()
 
@@ -272,16 +276,59 @@ function clearShapeGroup(runtime: ViewportRuntime) {
   while (runtime.shapeGroup.children.length) {
     const child = runtime.shapeGroup.children[0]
     runtime.shapeGroup.remove(child)
-    disposeObject(child)
+    disposeModelObject(child)
   }
   runtime.shapeObjects.clear()
   runtime.shapeSources.clear()
 }
 
+function clearTargetGroup(runtime: ViewportRuntime) {
+  while (runtime.targetGroup.children.length) {
+    const child = runtime.targetGroup.children[0]
+    runtime.targetGroup.remove(child)
+    disposeModelObject(child)
+  }
+}
+
+function buildTargetObject(shape: ModelShape) {
+  const geometry = primitiveGeometry(shape.type)
+  const material = new THREE.MeshBasicMaterial({
+    color: '#20a7c9',
+    transparent: true,
+    opacity: 0.16,
+    depthWrite: false,
+  })
+  const mesh = new THREE.Mesh(geometry, material)
+  const edges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({ color: '#1687a5', transparent: true, opacity: 0.72 }),
+  )
+  mesh.add(edges)
+  applyShapeTransform(mesh, shape)
+  return mesh
+}
+
+function resetView(runtime: ViewportRuntime) {
+  runtime.camera.position.set(8.6, 7.2, 10.5)
+  runtime.orbit.target.set(0, 1.5, 0)
+  runtime.orbit.update()
+}
+
+export function createModelGroupForExport(shapes: ModelShape[]) {
+  const group = new THREE.Group()
+  group.name = 'maker-island-export'
+  shapes.filter((shape) => !shape.isHole).forEach((shape) => group.add(buildShapeObject(shape)))
+  group.updateMatrixWorld(true)
+  return group
+}
+
 export function ModelViewport({
   shapes,
+  targetShapes = [],
   selectedId,
   mode,
+  transformEnabled = true,
+  resetViewSignal = 0,
   onSelect,
   onTransformEnd,
 }: ModelViewportProps) {
@@ -302,7 +349,7 @@ export function ModelViewport({
 
     let renderer: THREE.WebGLRenderer
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' })
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true })
     } catch (error) {
       console.error('无法启动 3D 画布。', error)
       setRendererFailed(true)
@@ -355,6 +402,10 @@ export function ModelViewport({
     shapeGroup.name = 'model-shapes'
     scene.add(shapeGroup)
 
+    const targetGroup = new THREE.Group()
+    targetGroup.name = 'quest-targets'
+    scene.add(targetGroup)
+
     const orbit = new OrbitControls(camera, renderer.domElement)
     orbit.enableDamping = true
     orbit.dampingFactor = 0.075
@@ -381,6 +432,7 @@ export function ModelViewport({
       transform,
       transformHelper,
       shapeGroup,
+      targetGroup,
       shapeObjects: new Map(),
       shapeSources: new Map(),
       selectionOutline: null,
@@ -511,10 +563,11 @@ export function ModelViewport({
       transform.detach()
       removeSelectionOutline(runtime)
       clearShapeGroup(runtime)
+      clearTargetGroup(runtime)
       transform.dispose()
       orbit.dispose()
-      scene.remove(transformHelper, grid, shapeGroup)
-      disposeObject(grid)
+      scene.remove(transformHelper, grid, shapeGroup, targetGroup)
+      disposeModelObject(grid)
       renderer.dispose()
       renderer.forceContextLoss()
       renderer.domElement.remove()
@@ -537,12 +590,25 @@ export function ModelViewport({
   useEffect(() => {
     const runtime = runtimeRef.current
     if (!runtime) return
+    clearTargetGroup(runtime)
+    targetShapes.forEach((shape) => runtime.targetGroup.add(buildTargetObject(shape)))
+  }, [targetShapes])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime || resetViewSignal === 0) return
+    resetView(runtime)
+  }, [resetViewSignal])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
 
     runtime.transform.setMode(mode)
     runtime.transform.detach()
     removeSelectionOutline(runtime)
 
-    if (!selectedId) return
+    if (!selectedId || !transformEnabled) return
     const selectedObject = runtime.shapeObjects.get(selectedId)
     if (!selectedObject) return
 
@@ -557,7 +623,7 @@ export function ModelViewport({
     outline.renderOrder = 10
     runtime.scene.add(outline)
     runtime.selectionOutline = outline
-  }, [mode, selectedId, shapes])
+  }, [mode, selectedId, shapes, transformEnabled])
 
   return (
     <div
