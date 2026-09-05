@@ -3,6 +3,13 @@
   "name": "maker-island",
   "main": "./worker/index.ts",
   "compatibility_date": "2026-09-04",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_id": "e49d9833-7f47-447f-861c-e62f9cd2628c",
+      "migrations_dir": "migrations"
+    }
+  ],
   "assets": {
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]

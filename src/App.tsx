@@ -13,10 +13,10 @@ import {
 } from './progress'
 import { scoreCoreQuest, scoreFinalQuest } from './scoring'
 import type { LearningProgress, ProgressBadge, QuestProject } from './types'
-import { ProfileGate } from './ProfileGate'
-import { enterProfile, getProfile, listProfiles, PROFILE_STORAGE_PREFIX } from './profiles'
-import type { ProfileEnvelope } from './profiles'
-import { ProfileWriter } from './profileWriter'
+import { CloudProfileHost } from './CloudProfileHost'
+import { cloudProfileCacheKey } from './cloudProfiles'
+import type { CloudProfileEnvelope } from './cloudTypes'
+import { CloudProfileWriter } from './cloudWriter'
 
 const Studio = lazy(() => import('./Studio').then((module) => ({ default: module.Studio })))
 
@@ -35,110 +35,29 @@ function screenFromHash(): Screen {
   return quest?.available ? { type: 'studio', questId } : { type: 'map' }
 }
 
-const LAST_PROFILE_KEY = 'maker-island-last-profile-v1'
-const SESSION_PROFILE_KEY = 'maker-island-session-profile-v1'
-
-function rememberedProfile(session = false) {
-  try { return (session ? sessionStorage : localStorage).getItem(session ? SESSION_PROFILE_KEY : LAST_PROFILE_KEY) ?? undefined } catch { return undefined }
-}
-
-function rememberProfile(id: string) {
-  try { localStorage.setItem(LAST_PROFILE_KEY, id) } catch { /* Optional welcome shortcut. */ }
-  try { sessionStorage.setItem(SESSION_PROFILE_KEY, id) } catch { /* The current tab can still be used. */ }
-}
-
-function initialProfile() {
-  const id = rememberedProfile(true)
-  if (!id) return null
-  const result = getProfile(id)
-  return result.ok ? result.profile : null
-}
-
 export default function App() {
-  const [active, setActive] = useState<ProfileEnvelope | null>(initialProfile)
-  const [directory, setDirectory] = useState(listProfiles)
-  const [choosing, setChoosing] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [workspaceEpoch, setWorkspaceEpoch] = useState(0)
-  const entering = useRef(false)
-
-  useEffect(() => {
-    const refreshDirectory = (event: StorageEvent) => {
-      if (event.key === null || event.key.startsWith(PROFILE_STORAGE_PREFIX)) setDirectory(listProfiles())
-    }
-    window.addEventListener('storage', refreshDirectory)
-    return () => window.removeEventListener('storage', refreshDirectory)
-  }, [])
-
-  const chooseProfile = useCallback(() => {
-    setDirectory(listProfiles())
-    setError('')
-    setChoosing(true)
-  }, [])
-
-  const enter = async (name: string) => {
-    if (entering.current) return
-    entering.current = true
-    setBusy(true)
-    setError('')
-    try {
-      const result = await enterProfile(name)
-      if (!result.ok) { setError(result.message); return }
-      rememberProfile(result.profile.id)
-      if (active?.id !== result.profile.id) window.location.hash = '/'
-      setActive(result.profile)
-      setWorkspaceEpoch((value) => value + 1)
-      setChoosing(false)
-      setDirectory(listProfiles())
-    } catch {
-      setError('暂时无法打开用户档案，请重试。原有进度仍被保留。')
-    } finally {
-      entering.current = false
-      setBusy(false)
-    }
-  }
-
-  const reloadProfile = () => {
-    if (!active) return
-    const result = getProfile(active.id)
-    if (!result.ok) { setError(result.message); return }
-    setActive(result.profile)
-    setWorkspaceEpoch((value) => value + 1)
-    setError('')
-  }
-
-  return (
-    <>
-      {active && <div hidden={choosing}>
-        <ProfileWorkspace key={`${active.id}:${workspaceEpoch}`} profile={active} onChooseProfile={chooseProfile} onReloadProfile={reloadProfile} reloadError={error} />
-      </div>}
-      {(!active || choosing) && <ProfileGate
-        profiles={directory.ok ? directory.profiles : []}
-        lastProfileId={choosing ? undefined : rememberedProfile()}
-        legacyPending={directory.ok && directory.legacy === 'available'}
-        busy={busy}
-        error={error || (!directory.ok ? directory.message : directory.legacy === 'damaged' ? '原有进度暂时无法读取，数据已保留，请先恢复备份。' : '')}
-        onEnter={enter}
-        onCancel={active ? () => { setError(''); setChoosing(false) } : undefined}
-      />}
-    </>
-  )
+  return <CloudProfileHost workspace={(controls) => <ProfileWorkspace {...controls} />} />
 }
 
-function ProfileWorkspace({ profile, onChooseProfile, onReloadProfile, reloadError }: {
-  profile: ProfileEnvelope
+function ProfileWorkspace({ profile, inviteLink, onChooseProfile, onReloadProfile, onReconnectFamily, registerCheckpoint, reloadError }: {
+  profile: CloudProfileEnvelope
+  inviteLink: string
   onChooseProfile: () => void
   onReloadProfile: () => void
+  onReconnectFamily: () => Promise<void>
+  registerCheckpoint: (save: () => Promise<boolean>) => () => void
   reloadError: string
 }) {
-  const [progress, setProgress] = useState<LearningProgress>(() => profile.progress)
-  const [writer] = useState(() => new ProfileWriter(profile))
+  const [writer] = useState(() => new CloudProfileWriter(profile))
+  const [progress, setProgress] = useState<LearningProgress>(() => writer.progress)
   const [, setSaveRevision] = useState(0)
   const alive = useRef(true)
   const [screen, setScreen] = useState<Screen>(() => screenFromHash())
   const [parentOpen, setParentOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [copyMessage, setCopyMessage] = useState('')
+  const inviteInput = useRef<HTMLInputElement>(null)
+  const lifetime = useRef(0)
   const storageHealthy = writer.state === 'saved'
   const [reviewScoreDraft, setReviewScoreDraft] = useState('')
   const [reviewCommentDraft, setReviewCommentDraft] = useState('')
@@ -154,11 +73,12 @@ function ProfileWorkspace({ profile, onChooseProfile, onReloadProfile, reloadErr
 
   useEffect(() => {
     alive.current = true
+    const lifetimeId = ++lifetime.current
     writer.onChange = () => { if (alive.current) setSaveRevision((value) => value + 1) }
+    writer.start()
     const checkOtherTab = (event: StorageEvent) => {
-      if (event.key !== null && event.key !== `${PROFILE_STORAGE_PREFIX}${profile.id}`) return
-      const result = getProfile(profile.id)
-      writer.externalChange(result.ok ? result.profile.revision : null)
+      if (event.key !== null && event.key !== cloudProfileCacheKey(profile.spaceId, profile.id)) return
+      writer.externalChange(event.newValue)
     }
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (writer.state === 'saved') return
@@ -172,9 +92,13 @@ function ProfileWorkspace({ profile, onChooseProfile, onReloadProfile, reloadErr
       writer.onChange = undefined
       window.removeEventListener('storage', checkOtherTab)
       window.removeEventListener('beforeunload', beforeUnload)
+      // A StrictMode effect rehearsal must not dispose the live queue.
+      queueMicrotask(() => { if (!alive.current && lifetime.current === lifetimeId) writer.dispose() })
       if ('speechSynthesis' in window) window.speechSynthesis.cancel()
     }
-  }, [profile.id, writer])
+  }, [profile.id, profile.spaceId, writer])
+
+  useEffect(() => registerCheckpoint(() => writer.checkpoint()), [registerCheckpoint, writer])
 
   const updateProgress = useCallback((change: (current: LearningProgress) => LearningProgress) => {
     if (!alive.current) return
@@ -197,10 +121,10 @@ function ProfileWorkspace({ profile, onChooseProfile, onReloadProfile, reloadErr
   }
 
   const downloadRecovery = () => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify({ format: 'maker-island-profile-backup', username: profile.name, progress: writer.progress }, null, 2)], { type: 'application/json' }))
+    const url = URL.createObjectURL(new Blob([writer.backup()], { type: 'application/json' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = `${profile.name}-本机进度备份.json`
+    link.download = `${profile.name}-进度备份.json`
     link.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
@@ -357,10 +281,17 @@ function ProfileWorkspace({ profile, onChooseProfile, onReloadProfile, reloadErr
         <div>
           <button type="button" onClick={downloadRecovery}>保存当前备份</button>
           {writer.state === 'conflict'
-            ? <button type="button" onClick={() => { if (window.confirm('重新载入会替换当前页面中尚未保存的修改。建议先保存当前备份。是否继续？')) onReloadProfile() }}>重新载入已保存进度</button>
-            : <button type="button" onClick={() => void writer.flush()}>重试保存</button>}
+            ? <button type="button" onClick={() => { if (window.confirm('重新载入云端会放弃当前待同步修改。请先保存当前备份。是否继续？')) onReloadProfile() }}>重新载入云端进度</button>
+            : writer.needsReconnect
+              ? <button type="button" disabled={switching} onClick={async () => {
+                setSwitching(true)
+                if (await writer.checkpoint()) await onReconnectFamily()
+                if (alive.current) setSwitching(false)
+              }}>{switching ? '正在连接…' : '重新连接家庭'}</button>
+              : <button type="button" onClick={() => void writer.flush()}>重试保存</button>}
         </div>
       </section>}
+      {writer.state === 'pending' && <p className="cloud-pending-notice" role="status">已保存在此设备，等待上传到云端。连接恢复后会自动重试。</p>}
       <div className="app-content" inert={parentOpen || switching ? true : undefined} aria-hidden={parentOpen || undefined}>
         {screen.type === 'map' || !activeQuest || !canOpenStudio ? (
           <QuestMap
@@ -404,8 +335,22 @@ function ProfileWorkspace({ profile, onChooseProfile, onReloadProfile, reloadErr
             {Object.keys(progress.legacyProjects ?? {}).length > 0 && <p className="legacy-project-note">🎨 另有 {Object.keys(progress.legacyProjects ?? {}).length} 件旧课程作品已保留，主线通关后会在“创意拓展岛”显示。</p>}
             <div className="privacy-note">
               <span aria-hidden="true">🛡️</span>
-              <div><strong>本机学习模式 · {profile.name}</strong><p>用户名用于区分本机档案，可以使用昵称，不需要注册。进度只保存在当前浏览器；使用此浏览器的人可以打开已有档案。</p></div>
+              <div><strong>家庭云端模式 · {profile.name}</strong><p>可以使用昵称，不需要注册。作品和进度保存在 Cloudflare 云端；断网修改暂存在本设备，显示“已同步到云端”后才可在其他设备继续。</p><p>家庭入口相当于钥匙。拿到链接的人可以查看和修改本家庭的所有档案，请勿公开分享。</p></div>
             </div>
+            <section className="parent-family-section" aria-labelledby="family-link-title">
+              <h3 id="family-link-title">在另一台设备继续</h3>
+              {inviteLink ? <>
+                <label htmlFor="parent-family-link">家庭私密入口（请由家长保管）</label>
+                <input ref={inviteInput} id="parent-family-link" type="text" readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} />
+                <button className="secondary-button" type="button" onClick={() => {
+                  void navigator.clipboard?.writeText(inviteLink).then(() => setCopyMessage('已复制，请只发给家人。')).catch(() => {
+                    inviteInput.current?.focus(); inviteInput.current?.select(); setCopyMessage('请复制已选中的链接。')
+                  })
+                  if (!navigator.clipboard) { inviteInput.current?.focus(); inviteInput.current?.select(); setCopyMessage('请复制已选中的链接。') }
+                }}>复制家庭入口</button>
+                <p role="status">{copyMessage || '在另一台设备打开此链接，再填写相同用户名，即可接着玩。'}</p>
+              </> : <p>此设备没有保留家庭入口链接。请从创建家庭的设备复制，或使用最初保存的链接。</p>}
+            </section>
             <section className="parent-score-section" aria-labelledby="parent-score-title">
               <h3 id="parent-score-title">每关能力记录</h3>
               <p className="parent-score-note">技术分只使用通关结果、精准徽章、独立徽章和过程记录；孩子的星星与自评不计入比赛分。</p>

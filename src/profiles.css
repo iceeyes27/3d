@@ -32,6 +32,11 @@
 .profile-save-notice p { margin: 0 0 12px; line-height: 1.6; }
 .profile-save-notice > div { display: flex; gap: 12px; flex-wrap: wrap; }
 .profile-save-notice button { min-height: 48px; padding: 8px 14px; border: 1px solid #ac7757; border-radius: 10px; color: inherit; background: white; font: inherit; cursor: pointer; }
+.cloud-pending-notice { margin: 0; padding: 8px 20px; color: #684920; background: #fff1c9; font-size: 16px; text-align: center; }
+.parent-family-section { margin: 24px 0; padding: 16px; border: 1px solid #d3e2cd; border-radius: 16px; background: #f5f8ef; font-size: 16px; }
+.parent-family-section label { display: block; margin-bottom: 8px; }
+.parent-family-section input { width: 100%; min-height: 48px; margin-bottom: 12px; padding: 10px; border: 1px solid #a8bda3; border-radius: 8px; background: white; font: inherit; }
+.parent-family-section p { line-height: 1.6; overflow-wrap: anywhere; }
 .studio-head-status .profile-badge-name { max-width: 8em; }
 @media (max-width: 1180px) {
   .studio-head-status { gap: 6px; }

@@ -1,0 +1,113 @@
+.family-gate {
+  padding-block: 24px;
+}
+
+.family-gate-card {
+  width: min(100%, 560px);
+}
+
+.family-gate-card .profile-gate-intro {
+  margin-bottom: 20px;
+}
+
+.family-gate-actions,
+.family-join-form {
+  display: grid;
+  gap: 12px;
+}
+
+.family-join-form {
+  margin-top: 10px;
+}
+
+.family-gate-card .profile-local-note {
+  margin-top: 20px;
+}
+
+.family-invite-card .profile-gate-brand {
+  margin-bottom: 16px;
+}
+
+.family-invite-card .profile-gate-intro {
+  margin-block: 10px 18px;
+}
+
+.family-invite-link {
+  font-size: 16px !important;
+}
+
+.family-copy-row {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.family-copy-button {
+  width: 100%;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 10px 16px;
+  border: 2px solid #bad7c3;
+  border-radius: 14px;
+  background: var(--forest-soft, #e4f3e8);
+  color: var(--forest-dark, #0c6240);
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.family-copy-button:not(:disabled):hover {
+  background: #d8eddf;
+}
+
+.family-copy-message {
+  margin: 0;
+  color: #566b5e;
+  font-size: 16px;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.family-invite-note {
+  margin: 16px 0;
+  padding: 12px 14px;
+  border: 1px solid #ecd5b8;
+  border-radius: 14px;
+  background: #fff5e6;
+  color: #78502d;
+  font-size: 16px;
+  line-height: 1.6;
+  text-align: left;
+}
+
+.family-continue-button {
+  width: 100%;
+}
+
+@media (max-height: 800px) {
+  .family-gate {
+    padding-block: 20px;
+  }
+
+  .family-gate-card {
+    padding: 22px 32px;
+  }
+
+  .family-invite-card .profile-local-note {
+    margin-top: 16px;
+  }
+}
+
+@media (max-width: 600px) {
+  .family-gate {
+    padding: 20px 16px;
+  }
+
+  .family-gate-card {
+    padding: 22px 20px;
+  }
+
+  .family-gate-card .profile-gate-intro {
+    font-size: 18px;
+  }
+}

@@ -114,7 +114,7 @@ export function ProfileGate({
           </form>
         )}
         {error && <p className="profile-gate-error" id={errorId} role="alert">{error}</p>}
-        <p className="profile-local-note">作品保存在当前浏览器里。记住自己的名字，下次接着玩。</p>
+        <p className="profile-local-note">作品自动同步到家庭云端。换设备时打开同一个家庭入口，再选自己的名字。可以用昵称，不需要注册。</p>
       </section>
     </main>
   )

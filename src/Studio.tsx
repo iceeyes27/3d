@@ -9,7 +9,7 @@ import {
 import { evaluateQuest, holePassesThroughBase, tunnelsAreDistinct } from './course'
 import { ModelViewport } from './ModelViewport'
 import { ProfileBadge } from './ProfileBadge'
-import type { ProfileSaveState } from './profileWriter'
+import type { CloudSaveState } from './cloudWriter'
 import type {
   ModelShape,
   OperationRecord,
@@ -28,7 +28,7 @@ interface StudioProps {
   savedProject?: QuestProject
   totalStars: number
   storageHealthy: boolean
-  saveState: ProfileSaveState
+  saveState: CloudSaveState
   username: string
   onSwitchProfile: () => void
   onBack: () => void
@@ -660,7 +660,7 @@ export function Studio({ quest, savedProject, totalStars, storageHealthy, saveSt
             {!practiceActive && hintLevel >= 3 && <div className="action-ghost" aria-label="半透明动作示范"><span aria-hidden="true">☝</span><p>{hints[2]}</p></div>}
             {!showDemo && viewGuideStep > 0 && <section className="view-guide" aria-label="视角小练习"><button className="guide-skip" type="button" onClick={() => setViewGuideStep(0)}>跳过</button><span aria-hidden="true">{viewGuideStep === 1 ? '👆' : '⌖'}</span><strong>{viewGuideStep === 1 ? '先学会看四周' : '再回到最好看的角度'}</strong><p>{viewGuideStep === 1 ? '按住画布空白处拖一拖，看看模型的另一面。' : '点一下“复位视角”，画布会回到初始位置。'}</p><button className="guide-next" type="button" onClick={() => { if (viewGuideStep === 1) setViewGuideStep(2); else { setResetViewSignal((signal) => signal + 1); setViewGuideStep(0) } }}>{viewGuideStep === 1 ? '我试过了' : '复位视角并开始'}</button></section>}
           </div>
-          <div className="studio-status" role="status"><span aria-hidden="true">🐼</span>{status}<span className={`autosave ${storageHealthy || saveState === 'saving' ? '' : 'save-error'}`}>{saveState === 'saving' ? '正在保存…' : storageHealthy ? '已自动保存' : saveState === 'conflict' ? '请处理进度冲突' : '暂时无法保存'}</span></div>
+          <div className="studio-status" role="status"><span aria-hidden="true">🐼</span>{status}<span className={`autosave ${storageHealthy || saveState === 'saving' ? '' : 'save-error'}`}>{saveState === 'saving' ? '正在同步…' : saveState === 'pending' ? '已存本机，等待同步' : storageHealthy ? '已同步到云端' : saveState === 'conflict' ? '请处理进度冲突' : '暂时无法保存'}</span></div>
         </section>
 
         <aside className={`tools-panel ${!practiceActive && hintLevel >= 2 ? 'hint-highlight' : ''}`}>
