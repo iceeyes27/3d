@@ -98,7 +98,7 @@ npm run db:migrate:remote
 npm run deploy
 ```
 
-该命令会先运行完整构建，再由 Wrangler 使用 Cloudflare Vite 插件生成的输出配置上传前端资源和 Worker。它会真实创建或更新名为 `maker-island` 的 Worker；如果账号里已有同名项目，请先修改 `wrangler.jsonc` 的 `name`。
+该命令会先运行完整构建，再由 Wrangler 使用 Cloudflare Vite 插件生成的输出配置上传前端资源和 Worker。它会真实创建或更新名为 `maker-island` 的 Worker；升级现有站点时保留这个名称，仅在需要另建独立站点时修改 `wrangler.jsonc` 的 `name`。
 
 `db:migrate:remote` 将 `migrations/` 中尚未执行的数据库结构变更应用到上面的真实数据库；这里的 migration 是建表/升级表结构，不是导入旧浏览器数据。仅有数据库 UUID 不等于有访问权限；未登录时不能执行线上建表或部署。CI 可以使用受限的 `CLOUDFLARE_API_TOKEN` 和 `CLOUDFLARE_ACCOUNT_ID`，令牌需要目标账号的 D1 与 Workers 部署相关权限，只应保存在 CI 的加密变量中。不要提交令牌。
 
