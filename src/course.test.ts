@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { evaluateQuest, holePassesThroughBase, quests, tunnelsAreDistinct } from './course'
+import { evaluatePrintChecks, evaluateQuest, holePassesThroughBase, quests, tunnelsAreDistinct } from './course'
 import type { ModelShape } from './types'
 
 const model = (type: ModelShape['type'], id: string, overrides: Partial<ModelShape> = {}): ModelShape => ({
@@ -42,6 +42,16 @@ describe('v2 course definition', () => {
     expect(evaluateQuest(4, [roof], [{ type: 'rotate' }])[0].complete).toBe(false)
     roof.rotation.z = 0
     expect(evaluateQuest(4, [roof], [])[0].complete).toBe(true)
+    roof.rotation.x = Math.PI / 2
+    expect(evaluateQuest(4, [roof], [])[0].complete).toBe(false)
+  })
+
+  it('offers three actual choices for each detective card and more than one roof turn', () => {
+    expect(quests[0].steps.every((item) => item.tools.length === 3)).toBe(true)
+    expect(quests[0].tasks.map((item) => item.label).join('')).not.toMatch(/球体|圆柱|圆锥/)
+    expect(quests[0].steps.map((item) => item.instruction).join('')).not.toMatch(/加入一个球体|加入一个圆柱|加入一个圆锥/)
+    expect(quests[3].starterShapes?.[0].rotation.z).toBeCloseTo(-Math.PI / 3)
+    expect(quests[3].steps[0].instruction).toContain('向左或向右')
   })
 
   it('checks real alignment and exact millimetre dimensions', () => {
@@ -110,6 +120,17 @@ describe('v2 course definition', () => {
     expect(evaluateQuest(10, [base, fixed, side], []).every((task) => task.complete)).toBe(true)
     fixed.position.y = 3
     expect(evaluateQuest(10, [base, fixed, side], []).at(-1)?.complete).toBe(false)
+    expect(evaluateQuest(10, [], []).at(-1)?.complete).toBe(false)
+  })
+
+  it('reports independent repair lights instead of treating the whole result as connection evidence', () => {
+    const shapes = structuredClone(quests[9].starterShapes!)
+    shapes.find((item) => item.id === 'floating-part')!.position.y = 0.9
+    expect(evaluatePrintChecks(shapes)).toEqual({ thickness: false, support: true, connection: true })
+    expect(evaluateQuest(10, shapes, []).at(-1)?.complete).toBe(false)
+    shapes.find((item) => item.id === 'thin-part')!.scale.x = 0.65
+    expect(evaluatePrintChecks(shapes)).toEqual({ thickness: true, support: true, connection: true })
+    expect(evaluatePrintChecks([])).toEqual({ thickness: false, support: false, connection: false })
   })
 
   it('keeps planning as evidence but judges final brief and capstone models', () => {

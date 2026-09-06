@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
 
-// Deliberately restricted to a local test server: this creates synthetic families.
-const base = new URL(process.argv[2] ?? 'http://127.0.0.1:5183')
-if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) throw new Error('Smoke tests only support localhost.')
+// Only the explicitly read-only mode may target a deployment. The full smoke
+// suite creates synthetic families and is always restricted to localhost.
+const args = process.argv.slice(2)
+const readinessOnly = args.includes('--readiness-only')
+const addresses = args.filter((arg) => arg !== '--readiness-only')
+if (addresses.length > 1 || addresses.some((arg) => arg.startsWith('--'))) throw new Error('Usage: node scripts/cloud-smoke.mjs [URL] [--readiness-only]')
+const base = new URL(addresses[0] ?? 'http://127.0.0.1:5183')
+const local = ['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)
+if (!local && !readinessOnly) throw new Error('Full smoke tests only support localhost. Use --readiness-only for a deployment.')
+if (!local && base.protocol !== 'https:') throw new Error('Deployment readiness checks require HTTPS.')
+if (base.username || base.password) throw new Error('Do not include credentials in the readiness URL.')
 const checks = []
 function client() {
   let cookie = ''
@@ -12,6 +20,8 @@ function client() {
     async api(path, method = 'GET', data, extraHeaders = {}) {
       const response = await fetch(new URL(path, base), {
         method,
+        signal: AbortSignal.timeout(15_000),
+        redirect: 'error',
         headers: { Origin: base.origin, 'Content-Type': 'application/json', Cookie: cookie, ...(spaceId ? { 'X-Space-ID': spaceId } : {}), ...extraHeaders },
         ...(data === undefined ? {} : { body: JSON.stringify(data) }),
       })
@@ -23,6 +33,18 @@ function client() {
 }
 
 const first = client()
+const ready = await first.api('/api/ready')
+assert.equal(ready.status, 200, `Database is not ready: ${ready.body.code ?? 'unknown'}; request ${ready.body.requestId ?? 'unknown'}`)
+assert.deepEqual(ready.body, { ok: true, service: 'maker-island', ready: true })
+assert.match(ready.headers.get('cache-control'), /no-store/)
+const readyHead = await fetch(new URL('/api/ready', base), { method: 'HEAD', signal: AbortSignal.timeout(15_000), redirect: 'error' })
+assert.equal(readyHead.status, 200)
+assert.equal(await readyHead.text(), '')
+checks.push('read-only database readiness for GET and HEAD')
+if (readinessOnly) {
+  console.log(JSON.stringify({ ok: true, checks }, null, 2))
+  process.exit(0)
+}
 assert.equal((await first.api('/api/session')).status, 401)
 const family = await first.api('/api/spaces', 'POST', {})
 assert.equal(family.body.ok, true)

@@ -12,6 +12,9 @@ export interface ModelViewportProps {
   mode: TransformMode
   transformEnabled?: boolean
   resetViewSignal?: number
+  questId?: number
+  celebration?: boolean
+  onSceneReady?: () => void
   onSelect: (id: string | null) => void
   onTransformEnd: (shape: ModelShape, operation: 'move' | 'rotate' | 'scale') => void
 }
@@ -27,6 +30,8 @@ interface ViewportRuntime {
   transformHelper: THREE.Object3D
   shapeGroup: THREE.Group
   targetGroup: THREE.Group
+  presentationGroup: THREE.Group
+  pendingReadyFrames: number
   shapeObjects: Map<string, ShapeObject>
   shapeSources: Map<string, ModelShape>
   selectionOutline: THREE.BoxHelper | null
@@ -290,6 +295,93 @@ function clearTargetGroup(runtime: ViewportRuntime) {
   }
 }
 
+function clearPresentationGroup(runtime: ViewportRuntime) {
+  while (runtime.presentationGroup.children.length) {
+    const child = runtime.presentationGroup.children[0]
+    runtime.presentationGroup.remove(child)
+    disposeModelObject(child)
+  }
+}
+
+/** These story props never enter the editable model, selection, or exports. */
+export function createQuestBackdrop(questId: number | undefined, shapes: ModelShape[], celebration: boolean) {
+  const group = new THREE.Group()
+  group.name = 'quest-presentation'
+
+  if (questId === 4) {
+    const wallMaterial = new THREE.MeshStandardMaterial({ color: '#fff0c9', roughness: 0.8 })
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.1, 1.8), wallMaterial)
+    wall.position.set(0, 0.55, 0)
+    wall.name = 'story-house-walls'
+    group.add(wall)
+
+    const door = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 0.7, 0.045),
+      new THREE.MeshStandardMaterial({ color: '#779d85', roughness: 0.8 }),
+    )
+    door.position.set(-0.35, 0.35, 0.925)
+    group.add(door)
+
+    const windowMaterial = new THREE.MeshStandardMaterial({
+      color: celebration ? '#ffe299' : '#7195a3',
+      emissive: celebration ? '#ffd06b' : '#000000',
+      emissiveIntensity: celebration ? 0.9 : 0,
+      roughness: 0.55,
+    })
+    const frontWindow = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.42, 0.045), windowMaterial)
+    frontWindow.name = 'story-house-window-front'
+    frontWindow.position.set(0.4, 0.7, 0.925)
+    const sideWindow = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.42, 0.4), windowMaterial)
+    sideWindow.name = 'story-house-window-side'
+    sideWindow.position.set(0.925, 0.7, 0.05)
+    group.add(frontWindow, sideWindow)
+  }
+
+  if (questId === 1) {
+    const snowHead = shapes.find((shape) => shape.id === 'snow-head' && shape.type === 'sphere' && !shape.isHole)
+    if (snowHead) {
+      const snowman = new THREE.Group()
+      snowman.name = 'story-snowman-face'
+      const eyeMaterial = new THREE.MeshStandardMaterial({ color: '#31536a' })
+      for (const x of [-0.15, 0.15]) {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 8), eyeMaterial)
+        eye.position.set(x, 0.1, 0.465)
+        snowman.add(eye)
+      }
+      const nose = new THREE.Mesh(
+        new THREE.ConeGeometry(0.055, 0.23, 12),
+        new THREE.MeshStandardMaterial({ color: '#ff9b56' }),
+      )
+      nose.rotation.x = Math.PI / 2
+      nose.position.set(0, -0.04, 0.59)
+      snowman.add(nose)
+      const scarf = new THREE.Mesh(
+        new THREE.TorusGeometry(0.31, 0.075, 8, 24),
+        new THREE.MeshStandardMaterial({ color: '#56bb85' }),
+      )
+      scarf.rotation.x = Math.PI / 2
+      scarf.position.y = -0.4
+      snowman.add(scarf)
+      applyShapeTransform(snowman, snowHead)
+      group.add(snowman)
+    }
+    const cup = shapes.find((shape) => shape.id === 'detective-cup' && shape.type === 'cylinder' && !shape.isHole)
+    if (cup) {
+      const cupDetails = new THREE.Group()
+      cupDetails.name = 'story-cup-handle'
+      const handle = new THREE.Mesh(
+        new THREE.TorusGeometry(0.32, 0.075, 10, 24),
+        new THREE.MeshStandardMaterial({ color: cup.color, roughness: 0.56 }),
+      )
+      handle.position.x = 0.54
+      cupDetails.add(handle)
+      applyShapeTransform(cupDetails, cup)
+      group.add(cupDetails)
+    }
+  }
+  return group
+}
+
 function buildTargetObject(shape: ModelShape) {
   const geometry = primitiveGeometry(shape.type)
   const material = new THREE.MeshBasicMaterial({
@@ -329,6 +421,9 @@ export function ModelViewport({
   mode,
   transformEnabled = true,
   resetViewSignal = 0,
+  questId,
+  celebration = false,
+  onSceneReady,
   onSelect,
   onTransformEnd,
 }: ModelViewportProps) {
@@ -336,11 +431,13 @@ export function ModelViewport({
   const runtimeRef = useRef<ViewportRuntime | null>(null)
   const onSelectRef = useRef(onSelect)
   const onTransformEndRef = useRef(onTransformEnd)
+  const onSceneReadyRef = useRef(onSceneReady)
   const modeRef = useRef(mode)
   const [rendererFailed, setRendererFailed] = useState(false)
 
   onSelectRef.current = onSelect
   onTransformEndRef.current = onTransformEnd
+  onSceneReadyRef.current = onSceneReady
   modeRef.current = mode
 
   useEffect(() => {
@@ -406,6 +503,10 @@ export function ModelViewport({
     targetGroup.name = 'quest-targets'
     scene.add(targetGroup)
 
+    const presentationGroup = new THREE.Group()
+    presentationGroup.name = 'story-props'
+    scene.add(presentationGroup)
+
     const orbit = new OrbitControls(camera, renderer.domElement)
     orbit.enableDamping = true
     orbit.dampingFactor = 0.075
@@ -433,6 +534,8 @@ export function ModelViewport({
       transformHelper,
       shapeGroup,
       targetGroup,
+      presentationGroup,
+      pendingReadyFrames: 0,
       shapeObjects: new Map(),
       shapeSources: new Map(),
       selectionOutline: null,
@@ -544,6 +647,12 @@ export function ModelViewport({
       orbit.update()
       runtime.selectionOutline?.update()
       renderer.render(scene, camera)
+      // The previous frame has been painted before acknowledging the scene.
+      // Rebuilding the model resets this counter; orbiting and selection do not.
+      if (runtime.pendingReadyFrames > 0) {
+        runtime.pendingReadyFrames -= 1
+        if (runtime.pendingReadyFrames === 0) onSceneReadyRef.current?.()
+      }
     }
     animate()
 
@@ -564,9 +673,10 @@ export function ModelViewport({
       removeSelectionOutline(runtime)
       clearShapeGroup(runtime)
       clearTargetGroup(runtime)
+      clearPresentationGroup(runtime)
       transform.dispose()
       orbit.dispose()
-      scene.remove(transformHelper, grid, shapeGroup, targetGroup)
+      scene.remove(transformHelper, grid, shapeGroup, targetGroup, presentationGroup)
       disposeModelObject(grid)
       renderer.dispose()
       renderer.forceContextLoss()
@@ -585,7 +695,16 @@ export function ModelViewport({
       runtime.shapeObjects.set(shape.id, object)
       runtime.shapeSources.set(shape.id, shape)
     })
+    runtime.pendingReadyFrames = 2
   }, [shapes])
+
+  useEffect(() => {
+    const runtime = runtimeRef.current
+    if (!runtime) return
+    clearPresentationGroup(runtime)
+    runtime.presentationGroup.add(createQuestBackdrop(questId, shapes, celebration))
+    runtime.pendingReadyFrames = 2
+  }, [questId, shapes, celebration])
 
   useEffect(() => {
     const runtime = runtimeRef.current
@@ -660,7 +779,7 @@ export function ModelViewport({
             pointerEvents: 'none',
           }}
         >
-          画布还是空的，从形状工具箱放入第一块积木吧！
+          {questId === 1 ? '观察左侧侦探卡，选择右侧的一个形状。' : '画布还是空的，从形状工具箱放入第一块积木吧！'}
         </p>
       ) : null}
     </div>

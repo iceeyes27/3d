@@ -1,0 +1,87 @@
+.quest-presentation {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #d6e7dc;
+  border-radius: 16px;
+  background: #f1f9f2;
+  color: #2e513d;
+  font-size: 16px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.quest-presentation p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.character-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.quest-character {
+  flex: 0 0 40px;
+  font-size: 32px;
+  text-align: center;
+}
+
+.quest-presentation.is-celebrating {
+  background: #fff7dd;
+  border-color: #ebd99d;
+}
+
+.inspection-card > strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 16px;
+}
+
+.inspection-lights {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.inspection-lights li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  color: #765a2d;
+}
+
+.inspection-light {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffe4ad;
+  color: #6c4a17;
+  font-weight: 800;
+}
+
+.inspection-lights .is-complete { color: #226244; }
+.inspection-lights .is-complete .inspection-light { background: #c8edcf; color: #175836; }
+.inspection-state { font-size: 16px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .quest-presentation.is-celebrating .quest-character {
+    animation: quest-greeting 600ms ease-out 1;
+  }
+
+  @keyframes quest-greeting {
+    0%, 100% { transform: rotate(0); }
+    35% { transform: rotate(-9deg); }
+    70% { transform: rotate(7deg); }
+  }
+}
+
+@media (max-height: 800px) and (min-width: 960px) {
+  .quest-presentation { margin: 8px 0; padding: 10px; }
+}

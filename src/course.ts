@@ -34,16 +34,16 @@ const safeTools: Quest['allowedTools'] = ['select', 'undo', 'redo', 'delete', 'r
 export const quests: Quest[] = [
   {
     id: 1, worldId: 1, skillId: 'shape-decomposition', title: '形状侦探', shortTitle: '形状侦探', subtitle: '认出基本形状',
-    story: '港口来了三件神秘物品。找出能组成它们的基本形状。', objective: '把物体拆成基本形状', minutes: 10,
+    story: '雪人、杯子和冰淇淋都缺了一块！观察侦探卡，从三个候选形状里选一个，帮它们恢复完整。', objective: '把物体拆成基本形状', minutes: 10,
     icon: '🔎', reward: '形状侦探徽章', available: true, palette: ['box', 'sphere', 'cylinder', 'cone'], starterShapes: [], targetShapes: [],
-    tasks: [{ id: 'find-round', label: '为雪人找到球体' }, { id: 'find-tall', label: '为杯子找到圆柱' }, { id: 'find-point', label: '为冰淇淋找到圆锥' }],
+    tasks: [{ id: 'find-round', label: '补好雪人的身体' }, { id: 'find-tall', label: '找回杯身' }, { id: 'find-point', label: '接住冰淇淋甜筒' }],
     steps: [
-      step('find-round', '雪人的身体是什么形状？', '从右边加入一个球体。', ['sphere'], ['雪人的身体是圆滚滚的。', '找没有棱角的形状。', '点击“加入球体”。']),
-      step('find-tall', '杯身是什么形状？', '加入一个圆柱，看看它平平的顶部。', ['cylinder'], ['杯身上下都有圆面。', '找又高又圆的形状。', '点击“加入圆柱”。']),
-      step('find-point', '甜筒是什么形状？', '最后加入一个圆锥。', ['cone'], ['甜筒一头尖、一头圆。', '找像小山一样的形状。', '点击“加入圆锥”。']),
+      step('find-round', '雪人的身体是什么形状？', '观察雪人的身体，从三个形状中选出能补好它的一个。', ['sphere', 'box', 'cone'], ['雪人的身体是圆滚滚的。', '找没有棱角、每个方向都一样圆的形状。', '选择球体，雪人会自动组装好。']),
+      step('find-tall', '杯身是什么形状？', '杯子需要能直直站住的杯身，哪一个形状合适？', ['cone', 'cylinder', 'sphere'], ['杯身上下都有圆面。', '找侧面直直的、上下同样宽的形状。', '选择圆柱，杯身会自动放好。']),
+      step('find-point', '甜筒是什么形状？', '冰淇淋缺了一个尖尖的甜筒，请替它选一块。', ['box', 'sphere', 'cone'], ['甜筒一头尖、一头圆。', '找从宽宽的圆面慢慢收成尖端的形状。', '选择圆锥，冰淇淋会自动装好。']),
     ],
     allowedTools: safeTools, constraints: [{ id: 'basic-types', label: '三种基本形状', kind: 'required-types', value: ['sphere', 'cylinder', 'cone'] }],
-    hints: ['先观察物体是圆的、方的还是尖的。', '比较每个形状的边和面。', '按当前任务只加入亮起的形状。'], tip: '每完成一个形状，下一张侦探卡会自动出现。', timingMode: 'hidden',
+    hints: ['先观察物体是圆的、方的还是尖的。', '比较每个形状的边和面。', '选错可以再试；选对后会自动装好，不需要移动。'], tip: '每找对一个形状，都能看到一件物品恢复完整。', timingMode: 'hidden',
   },
   {
     id: 2, worldId: 1, skillId: 'move', title: '方块回家', shortTitle: '方块回家', subtitle: '左右、上下、前后',
@@ -73,11 +73,11 @@ export const quests: Quest[] = [
   },
   {
     id: 4, worldId: 1, skillId: 'rotate', title: '屋顶转正', shortTitle: '屋顶转正', subtitle: '认识旋转',
-    story: '风把屋顶吹歪了。只用旋转把它端端正正地放回去。', objective: '旋转', minutes: 12, icon: '🏠', reward: '旋转徽章', available: true,
-    palette: ['cone'], starterShapes: [shape('roof', '歪屋顶', 'cone', '#f36e79', vec(0, 2, 0), vec(2.4, 1.8, 2.4), vec(0, 0, -Math.PI / 6))],
+    story: '大风吹歪了屋顶，屋里还黑着灯。判断该向哪边转，让屋顶合上，帮小屋重新亮起来。', objective: '旋转', minutes: 12, icon: '🏠', reward: '旋转徽章', available: true,
+    palette: ['cone'], starterShapes: [shape('roof', '歪屋顶', 'cone', '#f36e79', vec(0, 2, 0), vec(2.4, 1.8, 2.4), vec(0, 0, -Math.PI / 3))],
     targetShapes: [shape('target-roof', '正确屋顶', 'cone', '#65c9e8', vec(0, 2, 0), vec(2.4, 1.8, 2.4))],
     tasks: [{ id: 'roof-upright', label: '把屋顶转到正确角度' }],
-    steps: [step('roof-upright', '把屋顶转正', '选中屋顶，点击一次“转一下”。', ['rotate'], ['屋顶向左歪了。', '要向相反方向转回来。', '点击右边的“转一下”。'])],
+    steps: [step('roof-upright', '让小屋重新亮起来', '观察屋顶和淡蓝轮廓，试着向左或向右旋转，让尖端回到正中间。', ['rotate'], ['屋顶向右歪了，要让尖端回到中间。', '如果越转越歪，换一个方向试试。', '使用向左旋转，每转一次观察是否贴合轮廓。'])],
     allowedTools: [...safeTools, 'rotate'], constraints: [{ id: 'upright', label: '屋顶角度正确', kind: 'rotation', targetShapeId: 'roof', value: vec(0, 0, 0), tolerance: 3, unit: 'degree' }],
     hints: ['看屋顶尖端是否在中间。', '比较红色屋顶和蓝色轮廓。', '旋转一次是 30 度。'], tip: '最终角度正确才算通过，不是点过按钮就算。', reflectionPrompt: '用 20 秒说说：我认出了哪些形状？', timingMode: 'hidden',
   },
@@ -158,12 +158,12 @@ export const quests: Quest[] = [
     ],
     allowedTools: [...safeTools, 'hole', 'move', 'scale', 'group'], constraints: [{ id: 'wall', label: '壁厚与封底合格', kind: 'wall-thickness', min: 0.5 }],
     hints: ['内芯比外壳更细。', '顶部要打开，底部要留住。', '内芯底面应高于外壳底面。'], tip: '本关只记录完成时间，不显示倒计时。',
-    practice: { id: 'q9-wall-variation', title: '变式小挑战：比较壁厚', instruction: '把笔筒外壳变大或变小一次，观察四周壁厚怎样变化。', tools: ['scale'], operationTypes: ['scale'] },
+    practice: { id: 'q9-wall-variation', title: '变式小挑战：给薄笔筒加点力量', instruction: '调整新笔筒的外壳，让壁厚至少达到 0.5，并保留开口和封底。', tools: ['scale'], operationTypes: ['scale'] },
     timingMode: 'recorded',
   },
   {
     id: 10, worldId: 3, skillId: 'print-check', title: '打印前体检', shortTitle: '打印前体检', subtitle: '检查并修复',
-    story: '模型里藏着漂浮和过薄的问题。像工程师一样逐项修好。', objective: '检查与修复', minutes: 20, icon: '🩺', reward: '体检徽章', available: true,
+    story: '欢迎来到模型修理站！厚度、支撑、连接三盏体检灯在等你。找到故障，修好一处就点亮一盏。', objective: '检查与修复', minutes: 20, icon: '🩺', reward: '体检徽章', available: true,
     palette: ['box'], starterShapes: [
       shape('print-base', '打印底座', 'box', '#56bb85', vec(0, 0.3, 0), vec(4, 0.6, 2.5)),
       shape('floating-part', '漂浮零件', 'box', '#60b8ff', vec(0, 2, 0), vec(1.2, 1.2, 1.2)),
@@ -349,6 +349,17 @@ function supported(shapes: ModelShape[]) {
   )))
 }
 
+/** Independent repair-station lights; the final quest result still requires all three. */
+export function evaluatePrintChecks(shapes: ModelShape[]) {
+  const solids = shapes.filter((item) => !item.isHole)
+  const hasRequiredParts = solids.length >= 3
+  return {
+    thickness: hasRequiredParts && solids.every((item) => Math.min(item.scale.x, item.scale.y, item.scale.z) >= 0.6 - 1e-6),
+    support: hasRequiredParts && supported(solids),
+    connection: hasRequiredParts && allConnected(solids),
+  }
+}
+
 export function evaluateQuest(questId: number, shapes: ModelShape[], operations: Pick<OperationRecord, 'type' | 'shapeId'>[]): TaskEvaluation[] {
   const solids = shapes.filter((item) => !item.isHole)
   if (questId === 1) {
@@ -374,8 +385,8 @@ export function evaluateQuest(questId: number, shapes: ModelShape[], operations:
     ]
   }
   if (questId === 4) {
-    const roof = shapes.find((item) => item.id === 'roof')
-    return [success('roof-upright', Boolean(roof && near(Math.sin(roof.rotation.z), 0, 0.05) && Math.cos(roof.rotation.z) > 0.99), '屋顶仍然是歪的；让尖端回到正中间。')]
+    const roof = shapes.find((item) => item.id === 'roof' && !item.isHole && item.type === 'cone')
+    return [success('roof-upright', Boolean(roof && (['x', 'z'] as const).every((axis) => near(Math.sin(roof.rotation[axis]), 0, 0.05) && Math.cos(roof.rotation[axis]) > 0.99)), '屋顶仍然是歪的；让尖端回到正中间。', '屋顶合拢了，小屋亮起来了！')]
   }
   if (questId === 5) {
     const left = shapes.find((item) => item.id === 'shelf-left')
@@ -442,11 +453,10 @@ export function evaluateQuest(questId: number, shapes: ModelShape[], operations:
     ]
   }
   if (questId === 10) {
-    const thickEnough = solids.every((item) => Math.min(item.scale.x, item.scale.y, item.scale.z) >= 0.6 - 1e-6)
-    const noFloating = supported(solids)
-    const connected = allConnected(solids)
+    const hasRequiredParts = solids.length >= 3
+    const { thickness: thickEnough, support: noFloating, connection: connected } = evaluatePrintChecks(shapes)
     return [
-      success('fix-thin', thickEnough, '仍有零件小于 0.6；先把最薄方向加厚。'),
+      success('fix-thin', thickEnough, hasRequiredParts ? '仍有零件小于 0.6；先把最薄方向加厚。' : '修理站需要保留全部三件零件；撤销移除操作或重新开始，再修好它们。'),
       success('fix-floating', noFloating, '仍有零件漂浮；把它向下移动到支撑面。'),
       success('print-ready', thickEnough && noFloating && connected, '打印体检未通过：检查所有零件是否相连。'),
     ]

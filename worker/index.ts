@@ -24,6 +24,9 @@ const MAX_PROJECT_BYTES = 250_000
 const encoder = new TextEncoder()
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 
+const REQUIRED_TABLES = ['spaces', 'sessions', 'profiles', 'projects', 'profile_mutations', 'rate_limits']
+const REVISION_GUARD = 'profile_mutation_revision_guard'
+
 class ApiError extends Error {
   constructor(public status: number, public code: string, message: string, public extra: Record<string, unknown> = {}) { super(message) }
 }
@@ -38,6 +41,62 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
     ...headers,
   },
 })
+
+function failureCategory(error: unknown): 'schema-not-ready' | 'database-unavailable' | 'server-error' {
+  // Inspect only to classify. Never expose or log database error text: it may
+  // include SQL, bound values or other private request data.
+  let candidate = error
+  let databaseError = false
+  for (let depth = 0; depth < 3 && candidate instanceof Error; depth += 1) {
+    if (/no such (?:table|column)|has no column named|malformed database schema/i.test(candidate.message)) return 'schema-not-ready'
+    if (/\bD1(?:_|\b)|SQLITE_(?:BUSY|LOCKED|IOERR|CANTOPEN|CORRUPT|FULL|NOTADB)/i.test(candidate.message)) databaseError = true
+    candidate = candidate.cause
+  }
+  return databaseError ? 'database-unavailable' : 'server-error'
+}
+
+function safeRoute(request: Request) {
+  const path = new URL(request.url).pathname
+  if (['/api/health', '/api/ready', '/api/spaces', '/api/session', '/api/profiles'].includes(path)) return path
+  return /^\/api\/profiles\/[^/]+$/.test(path) ? '/api/profiles/:id' : 'other'
+}
+
+function logFailure(request: Request, requestId: string, code: string) {
+  const method = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'].includes(request.method) ? request.method : 'OTHER'
+  console.error(JSON.stringify({ event: 'api_failure', requestId, method, route: safeRoute(request), code }))
+}
+
+async function checkDatabaseReady(db: D1Binding) {
+  try {
+    const schema = await db.prepare(`SELECT type, name, tbl_name FROM sqlite_schema
+      WHERE (type = 'table' AND name IN (?, ?, ?, ?, ?, ?)) OR (type = 'trigger' AND name = ?)`)
+      .bind(...REQUIRED_TABLES, REVISION_GUARD).all<{ type: string; name: string; tbl_name: string }>()
+    if (!schema.success) throw new Error('D1 readiness query failed')
+    const tables = new Set(schema.results.filter((item) => item.type === 'table').map((item) => item.name))
+    if (REQUIRED_TABLES.some((name) => !tables.has(name)) || !schema.results.some((item) => item.type === 'trigger' && item.name === REVISION_GUARD && item.tbl_name === 'profile_mutations')) {
+      throw new ApiError(503, 'schema-not-ready', '云端数据库尚未初始化完成，请联系维护者检查建表步骤。本机内容不会因此删除。')
+    }
+    // Resolve every required column without reading children's records. This
+    // also catches partial/older schemas whose table names alone look correct.
+    const probe = await db.prepare(`SELECT spaces.id, spaces.invite_hash, spaces.created_at,
+      sessions.token_hash, sessions.space_id, sessions.expires_at,
+      profiles.id, profiles.space_id, profiles.name, profiles.normalized_name, profiles.revision,
+      profiles.created_at, profiles.updated_at, profiles.summary_json,
+      projects.profile_id, projects.course_version, projects.quest_id, projects.kind, projects.project_json,
+      profile_mutations.profile_id, profile_mutations.mutation_id, profile_mutations.space_id,
+      profile_mutations.expected_revision, profile_mutations.request_hash, profile_mutations.created_at,
+      rate_limits.key, rate_limits.window_start, rate_limits.count
+      FROM spaces, sessions, profiles, projects, profile_mutations, rate_limits WHERE 0`).all()
+    const functions = await db.prepare(`SELECT json_valid('{}') AS json_ready`).first<{ json_ready: number }>()
+    if (!probe.success || functions?.json_ready !== 1) throw new Error('D1 readiness query failed')
+  } catch (error) {
+    if (error instanceof ApiError) throw error
+    if (failureCategory(error) === 'schema-not-ready') {
+      throw new ApiError(503, 'schema-not-ready', '云端数据库结构尚未准备完成，请联系维护者检查建表步骤。本机内容不会因此删除。')
+    }
+    throw new ApiError(503, 'database-unavailable', '暂时无法连接云端数据库，请保留本机内容并稍后重试。')
+  }
+}
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
@@ -238,8 +297,14 @@ async function handle(request: Request, env: Env): Promise<Response> {
     throw new ApiError(403, 'https-required', '请通过 HTTPS 网站地址打开家庭存档。')
   }
   checkOrigin(request)
+  if (url.pathname === '/api/ready') checkMethod(request, ['GET', 'HEAD'])
   if (!env?.DB) throw new ApiError(503, 'database-unavailable', '云端存档尚未配置完成，请稍后重试。')
   const db = env.DB
+
+  if (url.pathname === '/api/ready') {
+    await checkDatabaseReady(db)
+    return json({ ok: true, service: 'maker-island', ready: true })
+  }
 
   if (url.pathname === '/api/spaces') {
     checkMethod(request, ['POST'])
@@ -300,13 +365,24 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    try { return await handle(request, env) } catch (error) {
+    const requestId = crypto.randomUUID()
+    let response: Response
+    try { response = await handle(request, env) } catch (error) {
       if (error instanceof ApiError) {
         const { allow, ...extra } = error.extra
-        return json({ ok: false, code: error.code, message: error.message, ...extra }, error.status, typeof allow === 'string' ? { allow } : {})
+        if (error.status >= 500) logFailure(request, requestId, error.code)
+        response = json({ ok: false, code: error.code, message: error.status >= 500 ? `${error.message}（问题编号：${requestId}）` : error.message, ...extra, requestId }, error.status, typeof allow === 'string' ? { allow } : {})
+      } else {
+        const code = failureCategory(error)
+        logFailure(request, requestId, code)
+        const message = code === 'schema-not-ready'
+          ? '云端数据库尚未初始化完成，请联系维护者检查建表步骤。请保留本机内容。'
+          : '云端暂时无法完成保存，请保留本机内容并稍后重试。'
+        response = json({ ok: false, code, message: `${message}（问题编号：${requestId}）`, requestId }, 503)
       }
-      // Never log request bodies, family tokens, cookies or children's models.
-      return json({ ok: false, code: 'server-error', message: '云端暂时无法完成保存，请保留本机内容并稍后重试。' }, 503)
     }
+    response.headers.set('x-request-id', requestId)
+    // HEAD must be bodyless even for errors, so monitoring can use either verb.
+    return request.method === 'HEAD' ? new Response(null, { status: response.status, headers: response.headers }) : response
   },
 }

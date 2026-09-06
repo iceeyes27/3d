@@ -1,0 +1,14 @@
+.quest-observation { margin: 16px 0; padding: 16px; border: 2px solid #92bf9d; border-radius: 18px; background: #eff8e9; color: #294c38; font-size: 16px; line-height: 1.55; }
+.quest-observation strong { display: block; font-size: 18px; }
+.quest-observation p { margin: 8px 0 12px; }
+.quest-observation button { width: 100%; min-height: 48px; font: inherit; }
+.quest-observation button:disabled { opacity: .65; cursor: default; }
+.practice-scene-note { margin: 12px 0; padding: 10px; border-radius: 12px; background: #edf5fb; font-size: 16px; line-height: 1.5; }
+.showcase-toolbar-note { margin: 0; padding: 8px 12px; font-size: 16px; color: #42634c; }
+
+/* Keep the single next action in view even when repair feedback needs scrolling. */
+.studio-layout .mission-panel { display: flex; flex-direction: column; overflow: hidden; }
+.mission-content { min-height: 0; flex: 1; overflow-y: auto; scrollbar-width: thin; }
+.mission-actions { flex: 0 0 auto; padding-top: 12px; }
+.mission-actions .quest-observation { margin: 0; padding: 12px; }
+.mission-actions > .check-button { margin-top: 0; }

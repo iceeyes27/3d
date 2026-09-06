@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyProgress } from '../src/progress'
 import type { LearningProgress } from '../src/types'
 import worker, { type D1Binding, type D1Statement } from './index'
@@ -71,8 +71,81 @@ function completedProgress(): LearningProgress {
   }
 }
 
-beforeEach(() => { db = new SqliteD1() })
-afterEach(() => { db.sqlite.close() })
+beforeEach(() => { db = new SqliteD1(); vi.spyOn(console, 'error').mockImplementation(() => {}) })
+afterEach(() => { db.sqlite.close(); vi.restoreAllMocks() })
+
+describe('readiness and privacy-safe diagnostics', () => {
+  it('checks the full schema with read-only GET and HEAD and does not require a family session', async () => {
+    db.sqlite.exec('PRAGMA query_only = ON')
+    const ready = await request('/api/ready')
+    expect(ready.response.status).toBe(200)
+    expect(ready.data).toEqual({ ok: true, service: 'maker-island', ready: true })
+    expect(ready.response.headers.get('cache-control')).toContain('no-store')
+    expect(ready.response.headers.get('x-request-id')).toMatch(/^[a-f0-9-]{36}$/)
+    expect(ready.response.headers.has('set-cookie')).toBe(false)
+    const head = await worker.fetch(new Request(`${origin}/api/ready`, { method: 'HEAD' }), { DB: db })
+    expect(head.status).toBe(200)
+    expect(await head.text()).toBe('')
+    expect(console.error).not.toHaveBeenCalled()
+    expect((await request('/api/ready', 'POST', {})).response.status).toBe(405)
+  })
+
+  it('reports an empty or partial schema separately from an unavailable binding', async () => {
+    db.sqlite.exec('DROP TABLE rate_limits')
+    const missingTable = await request('/api/ready')
+    expect(missingTable.response.status).toBe(503)
+    expect(missingTable.data.code).toBe('schema-not-ready')
+    expect(JSON.stringify(missingTable.data)).not.toContain('rate_limits')
+    const noBinding = await worker.fetch(new Request(`${origin}/api/ready`), {} as { DB: D1Binding })
+    expect(noBinding.status).toBe(503)
+    expect(await noBinding.json()).toMatchObject({ code: 'database-unavailable' })
+    const health = await worker.fetch(new Request(`${origin}/api/health`), {} as { DB: D1Binding })
+    expect(health.status).toBe(200)
+  })
+
+  it('does not declare readiness without the concurrent-write guard or required columns', async () => {
+    db.sqlite.exec('ALTER TABLE rate_limits RENAME COLUMN count TO total')
+    expect((await request('/api/ready')).data.code).toBe('schema-not-ready')
+    db.sqlite.exec('ALTER TABLE rate_limits RENAME COLUMN total TO count; DROP TRIGGER profile_mutation_revision_guard')
+    const absentGuard = await request('/api/ready')
+    expect(absentGuard.data.code).toBe('schema-not-ready')
+    expect(JSON.stringify(absentGuard.data)).not.toContain('profile_mutation_revision_guard')
+    const head = await worker.fetch(new Request(`${origin}/api/ready`, { method: 'HEAD' }), { DB: db })
+    expect(head.status).toBe(503)
+    expect(await head.text()).toBe('')
+    expect(head.headers.get('x-request-id')).toBeTruthy()
+  })
+
+  it('classifies connection failures and logs only safe fields with a generated request ID', async () => {
+    const privateData = 'PRIVATE-child-name-cookie-token-bound-sql'
+    vi.spyOn(db, 'prepare').mockImplementation(() => { throw new Error(`D1_ERROR: connection unavailable SELECT ${privateData}`) })
+    const result = await request(`/api/ready?token=${privateData}`, 'GET', undefined, { cookie: privateData }, { 'x-request-id': privateData })
+    expect(result.data.code).toBe('database-unavailable')
+    expect(result.data.requestId).toMatch(/^[a-f0-9-]{36}$/)
+    expect(result.response.headers.get('x-request-id')).toBe(result.data.requestId)
+    expect(result.data.message).toContain(result.data.requestId)
+    expect(console.error).toHaveBeenCalledOnce()
+    const log = JSON.parse(vi.mocked(console.error).mock.calls[0][0] as string)
+    expect(log).toEqual({ event: 'api_failure', requestId: result.data.requestId, method: 'GET', route: '/api/ready', code: 'database-unavailable' })
+    expect(JSON.stringify([result.data, log])).not.toContain(privateData)
+  })
+
+  it('classifies missing tables in normal API calls and redacts all unknown errors', async () => {
+    const { client } = await createFamily()
+    const secret = 'private-child-model-and-secret'
+    vi.spyOn(db, 'prepare').mockImplementation(() => { throw new Error(`no such table: private_table_${secret}`) })
+    const missing = await request('/api/session', 'GET', undefined, client)
+    expect(missing.data.code).toBe('schema-not-ready')
+    vi.mocked(db.prepare).mockImplementation(() => { throw new Error(secret) })
+    const failed = await request(`/api/profiles/${secret}?invite=${secret}`, 'PUT', { name: secret }, client)
+    expect(failed.response.status).toBe(503)
+    expect(failed.data.code).toBe('server-error')
+    expect(failed.data.requestId).not.toBe(missing.data.requestId)
+    const logs = vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(line as string))
+    expect(logs[1].route).toBe('/api/profiles/:id')
+    expect(JSON.stringify([logs, failed.data, missing.data])).not.toContain(secret)
+  })
+})
 
 describe('D1 cloud profile API against real SQLite transactions', () => {
   it('creates a private space, stores only token hashes, and enters from another device', async () => {
